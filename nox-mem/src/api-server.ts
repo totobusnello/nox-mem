@@ -135,6 +135,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // that never cleaned vec_chunk_map), silently claiming embeddings we don't have.
         let embedded = 0;
         let embeddingOrphans = 0;
+        let indexOnly = -1;
         try {
           const sqliteVec = await import("sqlite-vec"); sqliteVec.load(db);
           embedded = (db.prepare(
@@ -142,6 +143,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           ).get() as { c: number }).c;
           const totalMap = (db.prepare("SELECT COUNT(*) as c FROM vec_chunk_map").get() as { c: number }).c;
           embeddingOrphans = Math.max(0, totalMap - embedded);
+          try {
+            const idx = (db.prepare("SELECT COUNT(*) AS c FROM vec_chunks_rowids").get() as { c: number }).c;
+            indexOnly = Math.max(0, idx - totalMap);
+          } catch { indexOnly = -1; }
         } catch {
           try {
             embedded = (db.prepare(
@@ -251,7 +256,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         json(res, {
           chunks: { total, types },
           consolidation: { done: consolidated.c, failed: failed.c, last: lastCon.d },
-          vectorCoverage: { embedded, total, orphans: embeddingOrphans },
+          /**
+           * ⚠️ `orphans` é `totalMap − embedded`: derivado do MAP, logo cego para um
+           * vetor que perdeu a linha de map. `indexOnly` fecha esse ângulo lendo a
+           * shadow table `vec_chunks_rowids` direto — ela é tabela normal e não
+           * exige o módulo vec0 carregado, ao contrário de `vec_chunks`.
+           *
+           * Medido num deploy de produção em 2026-08-27: `orphans: 0` com
+           * `indexOnly: 2074` — 2.074 vetores válidos no índice, inalcançáveis pela
+           * busca e invisíveis a TODA ferramenta existente, porque as três (este
+           * campo, o `prune-orphan-vectors` e o alerta que os consome) partem do
+           * map. Um guarda cujo predicado exige o dado que falta não cobre a falta
+           * desse dado.
+           *
+           * −1 = shadow table ausente (vec0 nunca criado), que NÃO é zero.
+           */
+          vectorCoverage: { embedded, total, orphans: embeddingOrphans, indexOnly },
           knowledgeGraph: { entities: kgEntities, relations: kgRelations },
           retentionDistribution,
           archiveCandidates,
