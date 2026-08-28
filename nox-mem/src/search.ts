@@ -599,15 +599,22 @@ function logTelemetry(
   hasSemantic: boolean,
   latencyMs: number,
   skipReason?: string,
+  top?: SearchResult[],
 ): void {
   try {
     const db = getDb();
     const hash = createHash("sha1").update(query).digest("hex").substring(0, 16);
     const words = query.trim().split(/\s+/).filter(Boolean).length;
+    // `id` é opcional em SearchResult: filtrar ANTES de serializar, senão as duas
+    // colunas ficam desalinhadas (um `undefined` vira `null` em `ids` mas o score
+    // correspondente permanece em `scores`, e o par deixa de ser um par).
+    const comId = (top ?? []).filter((r) => typeof r.id === "number");
+    const ids = comId.length ? JSON.stringify(comId.map((r) => r.id)) : null;
+    const scores = comId.length ? JSON.stringify(comId.map((r) => r.score)) : null;
     db.prepare(
-      `INSERT INTO search_telemetry (query_hash, query_words, variants_count, results_count, has_semantic, latency_ms, expansion_skipped_reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(hash, words, variantsCount, resultsCount, hasSemantic ? 1 : 0, latencyMs, skipReason || null);
+      `INSERT INTO search_telemetry (query_hash, query_words, variants_count, results_count, has_semantic, latency_ms, expansion_skipped_reason, top_chunk_ids, top_scores)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(hash, words, variantsCount, resultsCount, hasSemantic ? 1 : 0, latencyMs, skipReason || null, ids, scores);
   } catch {
     // telemetria nunca derruba a search
   }
@@ -676,7 +683,7 @@ export async function searchHybrid(query: string, limit: number = 5, trackAccess
   const final = dedupe(preDedup, limit);
 
   const hasSemantic = final.some((r) => r.match_type === "semantic" || r.match_type === "hybrid");
-  logTelemetry(query, variants.length, final.length, hasSemantic, Date.now() - t0, expansion.reason);
+  logTelemetry(query, variants.length, final.length, hasSemantic, Date.now() - t0, expansion.reason, final);
 
   // D49 Phase 1 — temporal proximity rerank, shadow-mode opt-in.
   // Only activates if NOX_TEMPORAL_PATH=shadow|active. In shadow mode the
