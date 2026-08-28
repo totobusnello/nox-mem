@@ -25,7 +25,7 @@ export const DB_PATH = (
       : resolve(__dirname, "..", "nox-mem.db")
 );
 export const BACKUP_DIR = _ws ? resolve(_ws, "tools", "nox-mem", "backups") : resolve(__dirname, "..", "backups");
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Large-DB ingest guard (postmortem 2026-05-19)
@@ -181,10 +181,33 @@ function ensureSchema(db: Database.Database): void {
   if (currentVersion < 6) migrateToV6(db);
   if (currentVersion < 7) migrateToV7(db);
   if (currentVersion < 18) migrateToV8(db);
+  if (currentVersion < 19) migrateToV9(db);
 
   db.prepare("INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('schema_version', ?, datetime('now'))").run(String(SCHEMA_VERSION));
   // Keep PRAGMA user_version in sync so op-audit and tests can rely on it.
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
+function migrateToV9(db: Database.Database): void {
+  // v19 — per-chunk search telemetry.
+  //
+  // The v6 telemetry row records the SHAPE of a search (how many results, how
+  // fast, whether semantic fired) but not WHICH chunks came back. That is
+  // enough to answer "is search healthy?" and not enough to answer "what has
+  // this memory ever actually served?" — a question about the retrieval
+  // surface, which is what an agent's context is really made of.
+  //
+  // ⚠️ PRIVACY BOUNDARY, deliberate and load-bearing: this adds the chunk IDs
+  // and their scores. It does NOT add the raw query text. `query_hash` stays
+  // the only representation of the query (see the v6 comment below), and the
+  // test `telemetry-per-chunk.test.ts` reads the INSERT statement out of
+  // search.ts and fails if `query_text` ever appears in it. IDs are internal
+  // rowids of content the operator already owns; the query string is the one
+  // field that can carry a third party's words.
+  //
+  // Per-column try/catch keeps this idempotent on DBs patched out of band.
+  try { db.exec(`ALTER TABLE search_telemetry ADD COLUMN top_chunk_ids TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE search_telemetry ADD COLUMN top_scores TEXT`); } catch {}
 }
 
 function migrateToV8(db: Database.Database): void {
@@ -297,7 +320,11 @@ function migrateToV6(db: Database.Database): void {
       results_count INTEGER NOT NULL DEFAULT 0,
       has_semantic INTEGER NOT NULL DEFAULT 0,
       latency_ms INTEGER NOT NULL DEFAULT 0,
-      expansion_skipped_reason TEXT
+      expansion_skipped_reason TEXT,
+      -- v19 (ver migrateToV9): quais chunks a busca devolveu, e com que score.
+      -- JSON array, ou NULL quando nenhum resultado trouxe id.
+      top_chunk_ids TEXT,
+      top_scores TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_search_telemetry_ts ON search_telemetry(ts DESC);
   `);
