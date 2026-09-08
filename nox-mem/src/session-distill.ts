@@ -13,6 +13,7 @@
 
 import { readdirSync, readFileSync, existsSync, statSync } from "fs";
 import { resolve } from "path";
+import { homedir } from "os";
 import { getDb } from "./db.js";
 import { isNoise } from "./noise-filter.js";
 import { isDuplicate } from "./dedup.js";
@@ -30,7 +31,47 @@ const AGENTS_DIR = process.env.NOX_AGENTS_DIR ?? resolve(WORKSPACE, "agents");
 // Standalone operators: set to "" or omit (no agent sessions to distill).
 const DEFAULT_AGENTS: string[] = process.env.NOX_AGENTS
   ? process.env.NOX_AGENTS.split(",").map(s => s.trim()).filter(Boolean)
-  : ["nox", "forge", "atlas", "cipher", "boris", "lex"];
+  : ["main", "nox", "forge", "atlas", "cipher", "boris", "lex"];
+
+// NOX_CLAUDE_PROJECTS_DIR: where the Claude CLI keeps session transcripts.
+// Agents that run under the Claude CLI no longer write to <agents>/<id>/sessions/;
+// the CLI stores each session under <projectsDir>/<slug>, where <slug> is the
+// session cwd with "/" and "." replaced by "-" (/root/.openclaw/workspace ->
+// -root--openclaw-workspace). Both locations are read: the legacy dir still
+// holds sessions predating the switch.
+//
+// When unset, the CLI home is DISCOVERED rather than assumed: ~/.claude is the
+// default, but a team account uses ~/.claude-<team>, and a host can have several
+// at once (one deployment had three, and reading only one silently skipped the
+// busiest). Discovery also avoids requiring an env var that a long-lived daemon
+// would only pick up after a restart.
+export function claudeProjectSlug(cwd: string): string {
+  return cwd.replace(/[/.]/g, "-");
+}
+
+export function claudeProjectsDirs(): string[] {
+  const explicit = process.env.NOX_CLAUDE_PROJECTS_DIR;
+  if (explicit) return [explicit];
+  const home = homedir();
+  try {
+    return readdirSync(home)
+      .filter((d) => d === ".claude" || d.startsWith(".claude-"))
+      .map((d) => resolve(home, d, "projects"))
+      .filter((d) => existsSync(d));
+  } catch {
+    return [];
+  }
+}
+
+export function sessionDirsFor(agentId: string): string[] {
+  // "main" runs in the workspace root; every other agent in agents/<id>.
+  const cwd = agentId === "main" ? WORKSPACE : resolve(AGENTS_DIR, agentId);
+  const slug = claudeProjectSlug(cwd);
+  return [
+    resolve(AGENTS_DIR, agentId, "sessions"),
+    ...claudeProjectsDirs().map((d) => resolve(d, slug)),
+  ];
+}
 
 interface SessionEvent {
   type: string;
@@ -77,7 +118,7 @@ function listUnprocessedSessions(
   const sessions: Array<{ agentId: string; sessionFile: string; sessionKey: string }> = [];
 
   for (const agentId of agentIds) {
-    const sessionsDir = resolve(AGENTS_DIR, agentId, "sessions");
+    for (const sessionsDir of sessionDirsFor(agentId)) {
     if (!existsSync(sessionsDir)) continue;
 
     let files: string[];
@@ -107,6 +148,7 @@ function listUnprocessedSessions(
 
       sessions.push({ agentId, sessionFile: filePath, sessionKey });
     }
+    }
   }
 
   return sessions;
@@ -114,7 +156,7 @@ function listUnprocessedSessions(
 
 // ─── Message extraction ───────────────────────────────────────────────────────
 
-function extractMessages(sessionFile: string): Array<{ role: string; text: string; timestamp: string }> {
+export function extractMessages(sessionFile: string): Array<{ role: string; text: string; timestamp: string }> {
   const messages: Array<{ role: string; text: string; timestamp: string }> = [];
 
   let content: string;
@@ -133,7 +175,17 @@ function extractMessages(sessionFile: string): Array<{ role: string; text: strin
       continue;
     }
 
-    if (event.type !== "message" || !event.message) continue;
+    // Two transcript schemas in the wild: the OpenClaw one tags events as
+    // type "message", while Claude CLI transcripts tag them "user"/"assistant".
+    // Accepting only the former dropped every line of the latter with no error
+    // and no log — measured 0 lines of type "message" in a current transcript.
+    if (!event.message) continue;
+    if (
+      event.type !== "message" &&
+      event.type !== "user" &&
+      event.type !== "assistant"
+    )
+      continue;
     const { role, content: contentParts } = event.message;
     if (role !== "user" && role !== "assistant") continue;
 
