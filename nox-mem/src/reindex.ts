@@ -37,12 +37,12 @@
 import { getDb } from "./db.js";
 import { withOpAudit } from "./lib/op-audit.js";
 import { routeIngest } from "./lib/ingest-router.js";
-import { readdirSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { join, resolve } from "path";
-import { ReindexWipeDetectedError, MIN_RETENTION_RATIO } from "./reindex-errors.js";
+import { ReindexWipeDetectedError, ReindexSourceMissingError, MIN_RETENTION_RATIO } from "./reindex-errors.js";
 
-export { ReindexWipeDetectedError } from "./reindex-errors.js";
+export { ReindexWipeDetectedError, ReindexSourceMissingError } from "./reindex-errors.js";
 
 const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
 
@@ -66,6 +66,37 @@ function findFiles(dir: string, extensions: string[]): string[] {
     /* dir may not exist; e.g. shared/ absent on fresh deploy */
   }
   return results;
+}
+
+/** The directories reindex rebuilds from, in scan order. */
+export function reindexRoots(): string[] {
+  return [resolve(WORKSPACE, "memory"), resolve(WORKSPACE, "shared")];
+}
+
+function collectReindexFiles(): { memoryFiles: string[]; sharedFiles: string[] } {
+  const [memoryRoot, sharedRoot] = reindexRoots();
+  return {
+    memoryFiles: findFiles(memoryRoot!, [".md", ".json"]),
+    sharedFiles: findFiles(sharedRoot!, [".md"]),
+  };
+}
+
+/**
+ * Refuses (throws) when reindex has nothing trustworthy to rebuild from.
+ * Only fires in wipe conditions — a deployment whose workspace holds files
+ * passes untouched. Overridable with NOX_REINDEX_ALLOW_WIPE=1.
+ */
+export function assertReindexSource(preCount: number): void {
+  if (ALLOW_WIPE) return;
+  const roots = reindexRoots();
+  const existing = roots.filter((r) => existsSync(r));
+  if (existing.length === 0) {
+    if (preCount > 0) throw new ReindexSourceMissingError(roots, preCount, "no-source-dir");
+    return;
+  }
+  const { memoryFiles, sharedFiles } = collectReindexFiles();
+  const found = memoryFiles.length + sharedFiles.length;
+  if (found === 0 && preCount > 0) throw new ReindexSourceMissingError(existing, preCount, "no-files");
 }
 
 // Content-addressed fingerprint for UPSERT identity.
@@ -122,6 +153,12 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
 
   // ── Phase 1: snapshot pre-state ────────────────────────────────────────────
   const preCount = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
+
+  // ── Phase 0 guard (read-only so far): the rebuild source must exist ────────
+  // Measured 2026-09-28 on a clean npm install: no $OPENCLAW_WORKSPACE ⇒ the scan
+  // found 0 files ⇒ every chunk became an "orphan" and was deleted; the ratio
+  // guard below then threw — after the DELETE. Refuse here, before any write.
+  assertReindexSource(preCount);
 
   interface OldChunk {
     id: number;
@@ -211,31 +248,28 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
     .prepare("SELECT id, source_file, chunk_text FROM chunks WHERE id > ?")
     .all(maxIdBefore) as NewChunk[];
 
-  // For each new chunk, look up by fingerprint to inherit access metadata.
-  const updateNewMetadata = db.prepare(`
-    UPDATE chunks
-    SET tier = COALESCE(?, tier),
-        access_count = COALESCE(?, access_count),
-        importance = COALESCE(?, importance),
-        last_accessed_at = COALESCE(?, last_accessed_at)
-    WHERE id = ?
-  `);
-
+  // For each new chunk, look up by fingerprint: unchanged content keeps the old row.
   const seenOldIds = new Set<number>();
   let inheritedCount = 0;
+  // A new row whose fingerprint matches an old row is the SAME content: keep the
+  // old row (it already holds the embedding, a stable id and its metadata) and
+  // drop the fresh copy. Before 2026-09-28 both were kept, so every reindex left
+  // each unchanged chunk twice (measured: 10 chunks -> 20 after one reindex).
+  // Only the fresh copy (id > maxIdBefore) is ever deleted here — never old data.
+  const dropNewDuplicate = db.prepare("DELETE FROM chunks WHERE id = ? AND id > ?");
+  let newDuplicatesDropped = 0;
   const mergeTxn = db.transaction(() => {
     for (const nc of newChunks) {
       const fp = chunkFingerprint(nc.source_file, nc.chunk_text);
       const oldRow = oldByFingerprint.get(fp);
       if (oldRow) {
+        if (seenOldIds.has(oldRow.id)) {
+          // Second new copy of the same content in this run: keep the first.
+          newDuplicatesDropped += dropNewDuplicate.run(nc.id, maxIdBefore).changes;
+          continue;
+        }
         seenOldIds.add(oldRow.id);
-        updateNewMetadata.run(
-          oldRow.tier,
-          oldRow.access_count,
-          oldRow.importance,
-          oldRow.last_accessed_at,
-          nc.id,
-        );
+        newDuplicatesDropped += dropNewDuplicate.run(nc.id, maxIdBefore).changes;
         inheritedCount++;
       }
     }
@@ -247,6 +281,16 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
   // If fileErrors is non-empty AND would cause a wipe, the Layer 4 invariant
   // check below will throw and roll back.
   const orphanIds = oldChunks.map((r) => r.id).filter((id) => !seenOldIds.has(id));
+
+  // Layer 4, moved IN FRONT of the delete: project the post-count and refuse if
+  // it would breach the retention ratio. The post-delete check below stays as a
+  // second leg, but by then the rows are already gone (no auto-restore).
+  const countBeforeDelete = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
+  const projectedPost = countBeforeDelete - orphanIds.length;
+  if (preCount > 0 && projectedPost / preCount < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
+    throw new ReindexWipeDetectedError(preCount, projectedPost, MIN_RETENTION_RATIO);
+  }
+
   let orphanedDeleted = 0;
   if (orphanIds.length > 0) {
     const deleteOrphan = db.prepare("DELETE FROM chunks WHERE id = ?");
@@ -280,7 +324,7 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
   console.log(
     `[reindex] DONE files=${allFiles.length} pre=${preCount} post=${postCount} ` +
       `ratio=${(ratio * 100).toFixed(1)}% inherited=${inheritedCount} ` +
-      `orphans-deleted=${orphanedDeleted} ingest-errors=${fileErrors.length}`,
+      `orphans-deleted=${orphanedDeleted} new-duplicates-dropped=${newDuplicatesDropped} ingest-errors=${fileErrors.length}`,
   );
   if (fileErrors.length > 0) {
     console.error(`[reindex] ${fileErrors.length} files failed; first 5:`);
@@ -293,7 +337,7 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
     preCount,
     postCount,
     upserted: inheritedCount,
-    inserted: newChunks.length - inheritedCount,
+    inserted: newChunks.length - newDuplicatesDropped,
     preserved: inheritedCount,
     orphaned: orphanedDeleted,
   };

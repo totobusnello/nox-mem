@@ -4,27 +4,30 @@ import { fileURLToPath } from "url";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 // @ts-ignore - sqlite-vec ships no type declarations for this helper
 import { getLoadablePath as vecLoadablePath } from "sqlite-vec";
+import { resolveDbPathWithSource, isInsideNodeModules } from "./lib/db-path.js";
+
+let _warnedNodeModules = false;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const _ws = process.env.OPENCLAW_WORKSPACE;
 
-// DB path resolution — priority order (postmortem 2026-05-19 fix):
+// DB path resolution — priority order (postmortem 2026-05-19 fix), now shared
+// with op-audit via src/lib/db-path.ts so the pre-op snapshot always covers the
+// file this module opens:
 //   1. NOX_DB_PATH env var (explicit override for eval/test isolation)
 //   2. OPENCLAW_WORKSPACE-derived canonical path (production default)
-//   3. Relative fallback for local dev
+//   3. <package root>/nox-mem.db, only if it already exists (legacy installs)
+//   4. ~/.nox-mem/nox.db (standalone default — never inside node_modules)
 //
 // WARNING: Before this fix, only OPENCLAW_WORKSPACE was consulted.  Any caller
 // that set NOX_DB_PATH (e.g. G3 eval orchestrator, run_locomo_ablations.sh)
 // was silently ignored — `nox-mem ingest` always wrote to the production DB.
 // Root cause of the 2026-05-19 wipe incident (500 eval chunks → prod).
-export const DB_PATH = (
-  process.env.NOX_DB_PATH
-    ? resolve(process.env.NOX_DB_PATH)
-    : _ws
-      ? resolve(_ws, "tools", "nox-mem", "nox-mem.db")
-      : resolve(__dirname, "..", "nox-mem.db")
-);
-export const BACKUP_DIR = _ws ? resolve(_ws, "tools", "nox-mem", "backups") : resolve(__dirname, "..", "backups");
+const _resolvedDb = resolveDbPathWithSource();
+export const DB_PATH = _resolvedDb.path;
+// Backups live next to the DB. For the legacy package path this is the same
+// directory as before (<package root>/backups); it only moves for new installs.
+export const BACKUP_DIR = _ws ? resolve(_ws, "tools", "nox-mem", "backups") : resolve(dirname(DB_PATH), "backups");
 const SCHEMA_VERSION = 19;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -65,6 +68,15 @@ let _db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (_db && _db.open) return _db;
+  if (_resolvedDb.source === "standalone-default") {
+    mkdirSync(dirname(DB_PATH), { recursive: true });
+  } else if (_resolvedDb.source === "legacy-package" && isInsideNodeModules(DB_PATH) && !_warnedNodeModules) {
+    _warnedNodeModules = true;
+    console.error(
+      `[nox-mem] WARNING: database is inside node_modules (${DB_PATH}); \`npm update -g\` replaces that directory. ` +
+        `Move it and set NOX_DB_PATH, e.g.: mkdir -p ~/.nox-mem && mv "${DB_PATH}" ~/.nox-mem/nox.db && export NOX_DB_PATH=~/.nox-mem/nox.db`,
+    );
+  }
   _db = new Database(DB_PATH);
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");

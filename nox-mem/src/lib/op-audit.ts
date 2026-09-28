@@ -49,6 +49,7 @@ import { join, resolve, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { getDb } from '../db.js';
+import { resolveDbPath as resolveSharedDbPath } from './db-path.js';
 
 // Standalone decoupling (2026-06-15): ALLOWED_PREFIXES + snapshot dir are now CONFIGURABLE
 // so a non-origin operator can run nox-mem outside /root/.openclaw without weakening the
@@ -102,6 +103,12 @@ function computeAllowedPrefixes(): string[] {
   if (ws && !resolve(ws).startsWith('/root/.openclaw')) {
     prefixes.add(normalizePrefix(join(resolve(ws), 'tools', 'nox-mem')));
   }
+  // No env at all: the DB is either the legacy <package>/nox-mem.db or the
+  // standalone default ~/.nox-mem/nox.db — neither is attacker-chosen, so allow
+  // its directory (same trust as dirname(NOX_DB_PATH) above).
+  if (!process.env.NOX_DB_PATH && !ws) {
+    prefixes.add(normalizePrefix(dirname(resolveSharedDbPath())));
+  }
   return Array.from(prefixes);
 }
 
@@ -119,11 +126,9 @@ function computeDefaultSnapshotDir(): string {
   }
   // Standalone: prefer NOX_MEM_DIR, else the active DB's own directory (always allowlisted —
   // it's dirname(NOX_DB_PATH) or the OPENCLAW_WORKSPACE-derived nox-mem dir), else cwd.
-  const base = process.env.NOX_MEM_DIR
-    ? resolve(process.env.NOX_MEM_DIR)
-    : (process.env.NOX_DB_PATH || process.env.OPENCLAW_WORKSPACE)
-      ? dirname(dbPath)
-      : resolve(process.cwd());
+  // (cwd is no longer a fallback: the DB dir is always known and allowlisted, and
+  // a snapshot scattered into whatever directory the command ran from is lost.)
+  const base = process.env.NOX_MEM_DIR ? resolve(process.env.NOX_MEM_DIR) : dirname(dbPath);
   return join(base, '.nox-snapshots');
 }
 
@@ -139,11 +144,14 @@ function computeDefaultSnapshotDir(): string {
 //   1. NOX_DB_PATH (explicit override — eval/test isolation)
 //   2. OPENCLAW_WORKSPACE-derived path (production agent workspaces)
 //   3. Hardcoded main DB (default last resort)
+//
+// 2026-09-28: resolution now lives in lib/db-path.ts and is shared with db.ts.
+// The old step 3 here was the hardcoded main DB while db.ts fell back to
+// <package>/nox-mem.db — with no env set the snapshot covered a different file
+// than the op mutated. On the origin tree both paths are the same file, so the
+// VPS resolves exactly as before.
 function resolveDbPath(): string {
-  if (process.env.NOX_DB_PATH) return resolve(process.env.NOX_DB_PATH);
-  const ws = process.env.OPENCLAW_WORKSPACE;
-  if (ws) return resolve(ws, 'tools', 'nox-mem', 'nox-mem.db');
-  return '/root/.openclaw/workspace/tools/nox-mem/nox-mem.db';
+  return resolveSharedDbPath();
 }
 
 const DB_PATH = resolveDbPath();
