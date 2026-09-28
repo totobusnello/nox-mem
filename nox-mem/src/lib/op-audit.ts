@@ -48,8 +48,7 @@ import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, chmodSync, rea
 import { join, resolve, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { getDb } from '../db.js';
-import { resolveDbPath as resolveSharedDbPath } from './db-path.js';
+import { getDb, DB_PATH as DB_OPENED_PATH } from '../db.js';
 
 // Standalone decoupling (2026-06-15): ALLOWED_PREFIXES + snapshot dir are now CONFIGURABLE
 // so a non-origin operator can run nox-mem outside /root/.openclaw without weakening the
@@ -107,7 +106,7 @@ function computeAllowedPrefixes(): string[] {
   // standalone default ~/.nox-mem/nox.db — neither is attacker-chosen, so allow
   // its directory (same trust as dirname(NOX_DB_PATH) above).
   if (!process.env.NOX_DB_PATH && !ws) {
-    prefixes.add(normalizePrefix(dirname(resolveSharedDbPath())));
+    prefixes.add(normalizePrefix(dirname(DB_OPENED_PATH)));
   }
   return Array.from(prefixes);
 }
@@ -151,7 +150,9 @@ function computeDefaultSnapshotDir(): string {
 // than the op mutated. On the origin tree both paths are the same file, so the
 // VPS resolves exactly as before.
 function resolveDbPath(): string {
-  return resolveSharedDbPath();
+  // The very value db.ts resolved and opens — not a second resolution, so a
+  // legacy file created/removed in between cannot split them (TOCTOU).
+  return DB_OPENED_PATH;
 }
 
 const DB_PATH = resolveDbPath();
