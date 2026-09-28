@@ -44,12 +44,15 @@ fi
 # 7. Crons — consolidação agendada
 crontab -l 2>/dev/null | grep -q "nox-mem consolidate" && pass "cron de consolidação configurado" || warn "cron de consolidação não encontrado"
 
-# 8. Reindex — integridade do índice
-nox-mem reindex --dry-run 2>/dev/null || nox-mem reindex &>/dev/null || fail "nox-mem reindex falhou"
-pass "nox-mem reindex OK"
+# 8. Integridade do índice — coberta pelo `doctor` (FTS5 indexed == chunks).
+# NÃO rodar `reindex` aqui: ele reconstrói a partir de OPENCLAW_WORKSPACE, e numa
+# instalação sem esse diretório apaga todo chunk ingerido com `nox-mem ingest`
+# (há snapshot em .nox-snapshots/, mas smoke test não pode ser destrutivo).
+# `reindex` também não tem `--dry-run`: a primeira perna sempre falhava e a
+# segunda rodava o reindex de verdade.
 
 # 9. Teste de ingest (cria nota temporária e ingere)
-TEST_NOTE="/tmp/nox-mem-test-$$.md"
+TEST_NOTE="${TMPDIR:-/tmp}/nox-mem-test-$$.md"
 echo "# Teste Forge\nDecisão de teste: ingest funcionando em $(date)" > "$TEST_NOTE"
 nox-mem ingest "$TEST_NOTE" &>/dev/null && pass "ingest: nota de teste ingerida" || fail "ingest: falhou"
 rm -f "$TEST_NOTE"

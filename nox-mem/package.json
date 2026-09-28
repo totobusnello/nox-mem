@@ -1,6 +1,6 @@
 {
   "name": "nox-mem",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "Pain-weighted hybrid memory engine: FTS5 + semantic search + knowledge graph, self-hosted on any Linux VPS.",
   "type": "module",
   "license": "MIT",
@@ -38,7 +38,9 @@
     "node": ">=20"
   },
   "bin": {
-    "nox-mem": "dist/index.js"
+    "nox-mem": "dist/index.js",
+    "nox-mem-mcp": "dist/mcp-server.js",
+    "nox-mem-api": "dist/api-server.js"
   },
   "files": [
     "dist",

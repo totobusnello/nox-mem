@@ -189,8 +189,11 @@ All destructive operations (reindex, consolidate, compact, crystallize, kg-prune
 After install, verify the engine is healthy:
 
 ```bash
-# Start the API server (no `serve` subcommand — run the server entry directly)
-node "$(npm root -g)/nox-mem/dist/api-server.js" &
+nox-mem doctor          # Core must be ✅/⚠️; ⚪ under "Optional integrations" is fine
+nox-mem doctor --quiet  # scripts: prints only core problems, exits 1 if one failed
+
+# Start the API server
+nox-mem-api &
 
 # Check vector coverage (should be close to 1.0). Code default port is 18800.
 curl -s "http://127.0.0.1:${NOX_API_PORT:-18800}/api/health" | jq .vectorCoverage
@@ -204,16 +207,34 @@ A `vectorCoverage` value below 0.99 means some chunks are not yet embedded — r
 
 ```
 nox-mem search "query"     — hybrid search (FTS5 + semantic + RRF)
-nox-mem ingest <file>      — ingest a markdown or entity file
-nox-mem reindex            — rebuild FTS5 index
+nox-mem search "q" --as-of 2026-05-01        — time-travel: chunks that existed then
+nox-mem search "q" --changed-since 7d        — recency window (15m, 2h, 7d, 1w or ISO)
+nox-mem answer "question"  — grounded answer with citations (needs GEMINI_API_KEY)
+nox-mem ingest <file>      — ingest a markdown or entity file (one file per call)
+nox-mem reindex            — rebuild the index from $OPENCLAW_WORKSPACE (see warning below)
 nox-mem vectorize          — embed any unembedded chunks
 nox-mem stats              — chunk/entity/vector counts
 nox-mem kg-build           — extract knowledge graph entities
 nox-mem reflect            — surface high-salience insights
-node dist/api-server.js    — start HTTP API on $NOX_API_PORT (code default 18800)
-node dist/mcp-server.js    — start MCP server (20 tools, for agents)
+nox-mem-api                — start HTTP API on $NOX_API_PORT (code default 18800)
+nox-mem-mcp                — start MCP server over stdio (20 tools, for agents)
+nox-mem doctor             — health check (core + optional integrations)
 nox-mem --help             — full command reference
 ```
+
+Wire the MCP server into Claude Code:
+
+```bash
+claude mcp add nox-mem -e NOX_DB_PATH="$HOME/.nox-mem/nox.db" -e GEMINI_API_KEY="$GEMINI_API_KEY" -- nox-mem-mcp
+```
+
+The temporal filter is also on HTTP (`?as_of=` / `?changed_since=` on `/api/search`, or the same keys in a POST body) and MCP (`as_of` / `changed_since` on `nox_mem_search`). It is a hard SQL pre-filter on `created_at` / `updated_at` (ingestion time), not a ranking boost. `as_of` answers *which chunks existed then*, not *what they said then*: there is no version history, so a chunk edited after the date comes back with its current text. A bare date means the whole day in UTC (`--as-of 2026-05-01` includes 23:59 that day; `--changed-since 2026-05-01` starts at 00:00); a time without an offset is read as UTC. An unparseable date is an error on every surface (exit 2 / HTTP 400 / MCP `isError`), never a silently unfiltered search.
+
+> ⚠️ **`reindex` rebuilds only from `$OPENCLAW_WORKSPACE`** (default `/root/.openclaw/workspace`). Chunks you added with `nox-mem ingest <file>` from anywhere else are **removed** by a reindex. A snapshot is taken first (`.nox-snapshots/` next to the DB), but on a standalone install you normally do not need `reindex` at all.
+
+> ⚠️ **Always set `NOX_DB_PATH`.** Without it (and without `OPENCLAW_WORKSPACE`), the database defaults to a path inside the installed package, which `npm update -g` replaces.
+
+> Without embeddings, search is FTS5 keyword search, which requires every term to match: prefer keywords (`"zebra migration"`) over full questions (`"when was the zebra migration?"`) until you run `vectorize`.
 
 ---
 

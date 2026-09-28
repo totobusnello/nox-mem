@@ -18,6 +18,7 @@ import { getNoiseStats, isNoise } from "./noise-filter.js";
 import { distillSessions } from "./session-distill.js";
 import { startWatch } from "./watch.js";
 import { VERSION } from "./version.js";
+import { parseTemporalFilter, TemporalParseError, type TemporalFilter } from "./lib/dates.js";
 
 
 
@@ -30,14 +31,45 @@ program
   .description("Search memory (FTS5 + boost + recency)")
   .option("-n, --limit <n>", "Number of results", "5")
   .option("--no-hybrid", "Disable semantic search (FTS5 only)")
-  .action(async (query: string, opts: { limit: string; hybrid: boolean }) => {
+  .option("--as-of <date>", "Only chunks that existed at <date> (ISO 8601 or relative: 15m, 2h, 7d, 1w)")
+  .option("--changed-since <date>", "Only chunks created/updated after <date> (ISO 8601 or relative)")
+  .action(async (query: string, opts: { limit: string; hybrid: boolean; asOf?: string; changedSince?: string }) => {
+    let filter: TemporalFilter | undefined;
+    try {
+      filter = parseTemporalFilter({ asOf: opts.asOf, changedSince: opts.changedSince });
+    } catch (err) {
+      if (!(err instanceof TemporalParseError)) throw err;
+      console.error(`error: ${err.message}`);
+      process.exitCode = 2;
+      return;
+    }
     if (opts.hybrid) {
-      const results = await searchHybrid(query, parseInt(opts.limit, 10));
+      const results = await searchHybrid(query, parseInt(opts.limit, 10), true, filter);
       console.log(formatResults(results));
     } else {
-      console.log(formatResults(search(query, parseInt(opts.limit, 10))));
+      console.log(formatResults(search(query, parseInt(opts.limit, 10), true, filter)));
     }
     closeDb();
+  });
+
+// `answer` keeps its own argv parser (src/cli/answer.ts, P1 T8), so commander
+// only routes to it and hands over the raw argv after the subcommand name.
+program
+  .command("answer")
+  .description("Grounded answer with citations over memory (needs GEMINI_API_KEY; see `nox-mem answer --help`)")
+  .argument("[question...]")
+  .allowUnknownOption(true)
+  .helpOption(false)
+  .action(async () => {
+    const { runCli } = await import("./cli/answer.js");
+    const argv = process.argv.slice(process.argv.indexOf("answer") + 1);
+    const code = await runCli({
+      argv,
+      stdout: (line) => console.log(line),
+      stderr: (line) => console.error(line),
+    });
+    closeDb();
+    process.exitCode = code;
   });
 
 program
@@ -140,10 +172,11 @@ program
 
 program
   .command("doctor")
-  .description("Diagnostic check — Ollama, SQLite, FTS5, watcher, Notion")
-  .action(async () => {
+  .description("Diagnostic check — core (SQLite, FTS5, embeddings) + optional integrations (Ollama, Notion, watcher)")
+  .option("--quiet", "Print only core problems; exit 1 if a core check fails")
+  .action(async (opts: { quiet?: boolean }) => {
     const { doctor } = await import("./doctor.js");
-    await doctor();
+    await doctor({ quiet: opts.quiet });
     closeDb();
   });
 

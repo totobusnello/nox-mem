@@ -124,7 +124,10 @@ async function getRerankerFn(): Promise<RerankerFn> {
 
   try {
     // Dynamic import: Node ESM, evita carga em paths off-mode.
-    const t: any = await import("@xenova/transformers");
+    // Specifier held in a variable so tsc does not require the optional
+    // dependency at build time; a clone without it still type-checks.
+    const xenovaSpecifier = "@xenova/transformers";
+    const t: any = await import(xenovaSpecifier);
     // BGE-reranker-base é cross-encoder. xenova text-classification pipeline NÃO
     // suporta text_pair (passa pares como string única → tokenizer ignora pair).
     // Usar API low-level: AutoTokenizer + AutoModelForSequenceClassification com
