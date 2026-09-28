@@ -47,7 +47,9 @@ export async function doctor(opts: { quiet?: boolean } = {}): Promise<void> {
 
     // 3. Embeddings (semantic search). Missing key is a degraded mode, not a failure:
     //    search falls back to FTS5.
-    const hasKey = Boolean(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY);
+    const hasKey = Boolean(
+      process.env.NOX_EMBEDDING_API_KEY || process.env.NOX_EMBED_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY,
+    );
     let embedded = 0;
     try {
       const { ensureVecTable, countEmbedded } = await import("./embed.js");
