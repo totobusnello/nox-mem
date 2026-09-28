@@ -21,6 +21,8 @@ process.env.NOX_DB_PATH = join(TMP_ROOT, "test.db");
 delete process.env.GEMINI_API_KEY;
 delete process.env.OPENAI_API_KEY;
 delete process.env.NOX_FTS_OR_FALLBACK;
+delete process.env.NOX_EMBEDDING_API_KEY;
+delete process.env.NOX_EMBED_API_KEY;
 
 const NOW = Date.parse("2026-09-28T12:00:00Z");
 const QUESTION = "when was the zebra migration";
@@ -75,6 +77,9 @@ test("buildFtsOrQuery: only stopwords ⇒ null; embedded quotes are doubled", ()
 
 test("ftsOrFallbackEnabled: gate matrix", () => {
   assert.equal(ftsOrFallbackEnabled({}), true);
+  // Any key the embedding provider resolves counts as "has embeddings".
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBEDDING_API_KEY: "k" }), false);
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBED_API_KEY: "k" }), false);
   assert.equal(ftsOrFallbackEnabled({ NOX_FTS_OR_FALLBACK: "auto" }), true);
   assert.equal(ftsOrFallbackEnabled({ GEMINI_API_KEY: "k" }), false);
   assert.equal(ftsOrFallbackEnabled({ OPENAI_API_KEY: "k" }), false);

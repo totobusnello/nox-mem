@@ -427,7 +427,8 @@ export function ftsOrFallbackEnabled(env: NodeJS.ProcessEnv = process.env): bool
   const mode = (env.NOX_FTS_OR_FALLBACK ?? "auto").trim().toLowerCase();
   if (mode === "on") return true;
   if (mode === "off") return false;
-  return !env.GEMINI_API_KEY && !env.OPENAI_API_KEY;
+  // Same key names the embedding provider resolves (src/providers/index.ts).
+  return !env.NOX_EMBEDDING_API_KEY && !env.NOX_EMBED_API_KEY && !env.GEMINI_API_KEY && !env.OPENAI_API_KEY;
 }
 
 /** OR expression of the non-stopword terms, each double-quoted; null if none is left. */
