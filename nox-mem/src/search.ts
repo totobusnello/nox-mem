@@ -6,6 +6,9 @@ import { dedupe } from "./search-dedup.js";
 import { calculateSalience, calculateSalienceLegacy, getSalienceMode } from "./salience.js";
 import { rerankByTemporalProximity, logTemporalProbe } from "./temporal-retrieval.js";
 import { countQueryEntities } from "./query-entity-count.js";
+import { buildTemporalClause, type TemporalFilter } from "./lib/dates.js";
+
+export type { TemporalFilter } from "./lib/dates.js";
 
 // ─── Boost configuration (Fase 1.7a + A-boost-stack-wiring 2026-05-19) ────────
 //
@@ -397,13 +400,23 @@ function recordAccess(
   ).run(ts, ...valid);
 }
 
-export function search(query: string, limit: number = 5, trackAccess: boolean = true): SearchResult[] {
+export function search(
+  query: string,
+  limit: number = 5,
+  trackAccess: boolean = true,
+  filter?: TemporalFilter,
+): SearchResult[] {
   const db = getDb();
   const sanitized = query.replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
   if (!sanitized) return [];
 
   // G10d: compute entity count once per query (amortised via cache, <1ms hot path).
   const { count: queryEntityCount } = countQueryEntities(query, db);
+
+  // P3 temporal filter: hard SQL pre-filter, applied before LIMIT so the 20
+  // candidates are drawn from the allowed window. Never a ranking term.
+  // Without a filter the statement is byte-identical to the unfiltered one.
+  const temporal = buildTemporalClause(filter);
 
   let rows: FtsRow[];
   try {
@@ -415,9 +428,9 @@ export function search(query: string, limit: number = 5, trackAccess: boolean = 
              bm25(chunks_fts, 1.0, 0.5, 0.5) as rank
       FROM chunks_fts
       JOIN chunks c ON c.id = chunks_fts.rowid
-      WHERE chunks_fts MATCH ?
+      WHERE chunks_fts MATCH ?${temporal ? ` AND ${temporal.sql}` : ""}
       ORDER BY rank LIMIT 20
-    `).all(sanitized) as FtsRow[];
+    `).all(sanitized, ...(temporal?.params ?? [])) as FtsRow[];
   } catch {
     return [];
   }
@@ -485,7 +498,13 @@ interface BoostRow {
   chunk_type: string;
 }
 
-export async function searchSemantic(query: string, limit: number = 5, trackAccess: boolean = true): Promise<SearchResult[]> {
+export async function searchSemantic(
+  query: string,
+  limit: number = 5,
+  trackAccess: boolean = true,
+  filter?: TemporalFilter,
+): Promise<SearchResult[]> {
+  const temporal = buildTemporalClause(filter);
   try {
     const { embedText, semanticSearch, ensureVecTable, countEmbedded } = await import("./embed.js");
     const db = getDb();
@@ -495,14 +514,28 @@ export async function searchSemantic(query: string, limit: number = 5, trackAcce
     const vecCount = countEmbedded(db);
     if (vecCount === 0) {
       console.error("[WARN] Vector index empty — run 'nox-mem vectorize' first. Falling back to FTS5.");
-      return search(query, limit, trackAccess);
+      return search(query, limit, trackAccess, filter);
     }
 
     // G10d: compute entity count once per query (shared cache with FTS path).
     const { count: queryEntityCount } = countQueryEntities(query, db);
 
     const queryEmbedding = await embedText(query);
-    const rows = semanticSearch(db, queryEmbedding, limit * 2);
+    // vec0 KNN cannot take a WHERE on chunk columns, so the temporal filter is
+    // applied to the KNN candidates. Over-fetch when filtering, otherwise a
+    // narrow window would leave the top-k almost empty.
+    const knnK = temporal ? Math.max(limit * 20, 200) : limit * 2;
+    let rows = semanticSearch(db, queryEmbedding, knnK);
+
+    if (temporal && rows.length > 0) {
+      const ids = rows.map((r) => r.chunk_id).filter(Boolean);
+      const allowed = new Set(
+        (db.prepare(
+          `SELECT c.id FROM chunks c WHERE c.id IN (${ids.map(() => "?").join(",")}) AND ${temporal.sql}`,
+        ).all(...ids, ...temporal.params) as Array<{ id: number }>).map((r) => r.id),
+      );
+      rows = rows.filter((r) => allowed.has(r.chunk_id)).slice(0, limit * 2);
+    }
 
     if (rows.length === 0) return [];
 
@@ -582,7 +615,7 @@ export async function searchSemantic(query: string, limit: number = 5, trackAcce
   } catch (err) {
     // Fallback to FTS if vector index not ready
     console.error("[WARN] Semantic search failed, falling back to FTS:", (err as Error).message);
-    return search(query, limit, trackAccess);
+    return search(query, limit, trackAccess, filter);
   }
 }
 
@@ -620,22 +653,27 @@ function logTelemetry(
   }
 }
 
-export async function searchHybrid(query: string, limit: number = 5, trackAccess: boolean = true): Promise<SearchResult[]> {
+export async function searchHybrid(
+  query: string,
+  limit: number = 5,
+  trackAccess: boolean = true,
+  filter?: TemporalFilter,
+): Promise<SearchResult[]> {
   const t0 = Date.now();
   const perVariantLimit = limit * 2;
 
   // Kick off original-query searches IMMEDIATELY and expansion in parallel.
   // Total time = max(expansion + variantFTS, originalFTS+semantic) — does not block
   // the original search behind a 500-1500ms Gemini call.
-  const originalFtsPromise = Promise.resolve(search(query.trim(), perVariantLimit, trackAccess));
-  const semPromise = searchSemantic(query.trim(), perVariantLimit * 2, trackAccess);
+  const originalFtsPromise = Promise.resolve(search(query.trim(), perVariantLimit, trackAccess, filter));
+  const semPromise = searchSemantic(query.trim(), perVariantLimit * 2, trackAccess, filter);
   const expansionPromise = expandQuery(query);
 
   const expansion = await expansionPromise;
   const variants = expansion.variants;
 
   // Variants (excluding the original, which is already running) → FTS only.
-  const extraVariantFtsPromises = variants.slice(1).map((v) => Promise.resolve(search(v, perVariantLimit, trackAccess)));
+  const extraVariantFtsPromises = variants.slice(1).map((v) => Promise.resolve(search(v, perVariantLimit, trackAccess, filter)));
 
   const allBatches = await Promise.all([
     originalFtsPromise,

@@ -20,6 +20,7 @@ import { applyCorsHeaders, handlePreflight } from "./api/cors.js";
 import { safeErrorMessage } from "./lib/api/safe-error-message.js";
 import { registerWireUpRoutes } from "./api/wire-up.js";
 import { handleBrief } from "./api/brief.js";
+import { parseTemporalFilter, TemporalParseError, type TemporalFilter } from "./lib/dates.js";
 import { handleIngestEvent } from "./api/ingest-event.js";
 import {
   handleObsHealth,
@@ -368,18 +369,33 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         let qText: string | undefined;
         let limitStr: string | undefined;
         let trackStr: string | undefined;
+        let asOfStr: string | undefined;
+        let changedSinceStr: string | undefined;
         if (req.method === "POST") {
-          const body = await readJson<{ q?: string; query?: string; limit?: number | string; track?: boolean | string }>(req);
+          const body = await readJson<{ q?: string; query?: string; limit?: number | string; track?: boolean | string; as_of?: string; changed_since?: string }>(req);
           qText = body.q ?? body.query;
           limitStr = body.limit !== undefined ? String(body.limit) : undefined;
           trackStr = body.track !== undefined ? String(body.track) : undefined;
+          asOfStr = body.as_of;
+          changedSinceStr = body.changed_since;
         } else {
           const q = parseQuery(url);
           qText = q.q ?? q.query;
           limitStr = q.limit;
           trackStr = q.track;
+          asOfStr = q.as_of;
+          changedSinceStr = q.changed_since;
         }
         if (!qText) { json(res, { error: "q parameter required (POST body or GET query string, field name: q or query)" }, 400); break; }
+        // P3: an unparseable date is a 400, never a silently unfiltered search.
+        let temporalFilter: TemporalFilter | undefined;
+        try {
+          temporalFilter = parseTemporalFilter({ asOf: asOfStr, changedSince: changedSinceStr });
+        } catch (err) {
+          if (!(err instanceof TemporalParseError)) throw err;
+          json(res, { error: err.message }, 400);
+          break;
+        }
         const limit = parseInt(limitStr || "10");
         // D1 (2026-06-07): healthchecks/canary pass ?track=false so automated
         // probes don't inflate access_count → salience feedback loop. Default
@@ -388,7 +404,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // E12 (2026-05-04): propagate requesting agent from header
         const agentHeader = req.headers["x-agent-name"];
         const requestingAgent = (Array.isArray(agentHeader) ? agentHeader[0] : agentHeader) ?? process.env.NOX_AGENT_NAME;
-        const results = await searchHybrid(qText, limit, trackAccess);
+        const results = await searchHybrid(qText, limit, trackAccess, temporalFilter);
         // E03a (2026-05-02): SPO injection envelope. Mode shadow → compute+log only.
         // Mode active → surface vaultFacts in response. Mode off → no compute.
         const vf = getVaultFacts(qText, getDb());

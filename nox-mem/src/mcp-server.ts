@@ -15,6 +15,7 @@ import { getStats } from "./stats.js";
 import { primer } from "./primer.js";
 import { createInterface } from "readline";
 import { VERSION } from "./version.js";
+import { parseTemporalFilter } from "./lib/dates.js";
 
 const SERVER_INFO = {
   name: "nox-mem",
@@ -30,6 +31,8 @@ const TOOLS = [
       properties: {
         query: { type: "string", description: "Search query (natural language or keywords)" },
         limit: { type: "number", description: "Max results (default 5, max 20)", default: 5 },
+        as_of: { type: "string", description: "Time-travel: only chunks that existed at this date (ISO 8601 like 2026-05-01, or relative like 7d, 2h, 1w)" },
+        changed_since: { type: "string", description: "Recency window: only chunks created or updated after this date (ISO 8601 or relative)" },
       },
       required: ["query"],
     },
@@ -243,7 +246,12 @@ async function handleRequest(req: { id: number | string; method: string; params?
           case "nox_mem_search": {
             const query = args.query as string;
             const limit = Math.min(Number(args.limit) || 5, 20);
-            const results = await searchHybrid(query, limit);
+            // Parse errors throw and reach the client as isError — never an unfiltered search.
+            const filter = parseTemporalFilter({
+              asOf: args.as_of as string | undefined,
+              changedSince: args.changed_since as string | undefined,
+            });
+            const results = await searchHybrid(query, limit, true, filter);
             text = formatResults(results);
             break;
           }
