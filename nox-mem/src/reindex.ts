@@ -200,10 +200,35 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
   const oldChunks = db.prepare(`SELECT ${selectCols} FROM chunks`).all() as OldChunk[];
 
   // Build content fingerprint -> oldChunk index.
+  // One representative per content fingerprint. When the DB already holds
+  // duplicates (every reindex before 2026-09-28 doubled unchanged content), the
+  // kept representative is the one WITH an embedding, then the lowest id — the
+  // other copies become orphans and are removed, and dropping one without a
+  // vector must never cost the one that has it.
+  let embeddedIds = new Set<number>();
+  try {
+    embeddedIds = new Set(
+      (db.prepare("SELECT chunk_id FROM vec_chunk_map").all() as Array<{ chunk_id: number }>).map((r) => r.chunk_id),
+    );
+  } catch {
+    /* no vector map yet (fresh / keyless install) — every row is equal */
+  }
+  const better = (a: OldChunk, b: OldChunk): OldChunk => {
+    const ae = embeddedIds.has(a.id), be = embeddedIds.has(b.id);
+    if (ae !== be) return ae ? a : b;
+    return a.id <= b.id ? a : b;
+  };
   const oldByFingerprint = new Map<string, OldChunk>();
   for (const row of oldChunks) {
-    oldByFingerprint.set(chunkFingerprint(row.source_file, row.chunk_text), row);
+    const fp = chunkFingerprint(row.source_file, row.chunk_text);
+    const cur = oldByFingerprint.get(fp);
+    oldByFingerprint.set(fp, cur ? better(cur, row) : row);
   }
+  // Retention is measured on DISTINCT content, not rows: removing a redundant
+  // copy of content that is still present is not a loss. Measured on rows, a DB
+  // doubled by the old bug (2N → N) read as a 50% wipe and the cleanup reindex
+  // was refused forever.
+  const preDistinct = oldByFingerprint.size;
 
   console.log(`[reindex] Phase 1: snapshotted ${oldChunks.length} existing chunks`);
 
@@ -215,8 +240,8 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
   // To distinguish "old" vs "new" rows we capture max(id) before any ingest.
   const maxIdBefore = (db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM chunks").get() as { m: number }).m;
 
-  const memoryFiles = findFiles(resolve(WORKSPACE, "memory"), [".md", ".json"]);
-  const sharedFiles = findFiles(resolve(WORKSPACE, "shared"), [".md"]);
+  // Same scan as assertReindexSource — one definition of "the source".
+  const { memoryFiles, sharedFiles } = collectReindexFiles();
   const allFiles = [...memoryFiles, ...sharedFiles];
   let totalChunksIngested = 0;
   const fileErrors: Array<{ file: string; error: string }> = [];
@@ -285,10 +310,17 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
   // Layer 4, moved IN FRONT of the delete: project the post-count and refuse if
   // it would breach the retention ratio. The post-delete check below stays as a
   // second leg, but by then the rows are already gone (no auto-restore).
-  const countBeforeDelete = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
-  const projectedPost = countBeforeDelete - orphanIds.length;
-  if (preCount > 0 && projectedPost / preCount < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
-    throw new ReindexWipeDetectedError(preCount, projectedPost, MIN_RETENTION_RATIO);
+  // Distinct content that will remain after the delete (kept old rows + new
+  // rows). An edited file replaces content — it is not a loss — so this counts
+  // what will be present, not which old fingerprints survived.
+  const orphanSet = new Set(orphanIds);
+  const projectedFps = new Set<string>();
+  for (const r of db.prepare("SELECT id, source_file, chunk_text FROM chunks").all() as Array<{ id: number; source_file: string; chunk_text: string }>) {
+    if (!orphanSet.has(r.id)) projectedFps.add(chunkFingerprint(r.source_file, r.chunk_text));
+  }
+  const projectedDistinct = projectedFps.size;
+  if (preDistinct > 0 && projectedDistinct / preDistinct < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
+    throw new ReindexWipeDetectedError(preDistinct, projectedDistinct, MIN_RETENTION_RATIO);
   }
 
   let orphanedDeleted = 0;
@@ -316,9 +348,14 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
   // ── Layer 4: invariant check ────────────────────────────────────────────────
   // Compute retention ratio. If we lost more than (1 - MIN_RETENTION_RATIO) of chunks,
   // assume wipe-class failure and throw — withOpAudit failure path will preserve snapshot.
-  const ratio = preCount === 0 ? 1 : postCount / preCount;
-  if (preCount > 0 && ratio < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
-    throw new ReindexWipeDetectedError(preCount, postCount, MIN_RETENTION_RATIO);
+  // Second leg, measured on the DB itself after the delete: distinct content present.
+  const retainedDistinct = new Set(
+    (db.prepare("SELECT source_file, chunk_text FROM chunks").all() as Array<{ source_file: string; chunk_text: string }>)
+      .map((r) => chunkFingerprint(r.source_file, r.chunk_text)),
+  ).size;
+  const ratio = preDistinct === 0 ? 1 : retainedDistinct / preDistinct;
+  if (preDistinct > 0 && ratio < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
+    throw new ReindexWipeDetectedError(preDistinct, retainedDistinct, MIN_RETENTION_RATIO);
   }
 
   console.log(
@@ -359,8 +396,7 @@ interface ReindexResult {
 export async function reindex(opts?: { dryRun?: boolean }): Promise<ReindexResult> {
   if (opts?.dryRun) {
     const db = getDb();
-    const memoryFiles = findFiles(resolve(WORKSPACE, "memory"), [".md", ".json"]);
-    const sharedFiles = findFiles(resolve(WORKSPACE, "shared"), [".md"]);
+    const { memoryFiles, sharedFiles } = collectReindexFiles();
     const allFiles = [...memoryFiles, ...sharedFiles];
     const currentChunks = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
     const entityFiles = allFiles.filter((f) => f.includes("/memory/entities/")).length;
