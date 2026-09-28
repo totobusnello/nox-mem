@@ -118,10 +118,23 @@ program
 
 program
   .command("reindex")
-  .description("Rebuild entire index from markdown files (preserves consolidation state)")
-  .action(async () => {
-    const result = await reindex();
-    console.log(`[INFO] Reindexed ${result.files} files, ${result.chunks} chunks`);
+  .description("Rebuild the index from $OPENCLAW_WORKSPACE/memory and /shared (refuses if that source is missing)")
+  .option("--dry-run", "Print what would be reindexed as JSON; does not touch the DB")
+  .action(async (opts: { dryRun?: boolean }) => {
+    try {
+      const result = await reindex({ dryRun: opts.dryRun });
+      if (!opts.dryRun) console.log(`[INFO] Reindexed ${result.files} files, ${result.chunks} chunks`);
+    } catch (err) {
+      const name = (err as Error).name;
+      if (name === "ReindexSourceMissingError" || name === "ReindexWipeDetectedError") {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    } finally {
+      closeDb();
+    }
   });
 
 program
