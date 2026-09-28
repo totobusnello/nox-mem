@@ -24,6 +24,10 @@ mkdirSync(MEM, { recursive: true });
 mkdirSync(join(WS, "tools", "nox-mem"), { recursive: true });
 delete process.env.NOX_DB_PATH;
 delete process.env.NOX_REINDEX_ALLOW_WIPE;
+// Hermetic: with an embedding key in the caller's env, ingest auto-vectorizes
+// (real API calls, and every row gets a vector), which changes which duplicate
+// counts as "the embedded one". Tests never spend on embeddings.
+for (const k of ["GEMINI_API_KEY", "OPENAI_API_KEY", "NOX_EMBEDDING_API_KEY", "NOX_EMBED_API_KEY"]) delete process.env[k];
 process.env.OPENCLAW_WORKSPACE = WS;
 
 let getDb: any, closeDb: any, reindex: any, routeIngest: any;
