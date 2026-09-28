@@ -400,6 +400,49 @@ function recordAccess(
   ).run(ts, ...valid);
 }
 
+// ─── FTS5 OR fallback (keyless installs) ─────────────────────────────────────
+//
+// FTS5 reads a space-separated query as an AND of every term, so a natural
+// language question ("when was the zebra migration") matches nothing unless
+// every filler word is in the chunk. With embeddings the semantic branch covers
+// that; without a key it does not. When — and only when — the AND query returns
+// zero rows, search() retries with an OR of the content terms.
+//
+// Gate NOX_FTS_OR_FALLBACK: "on" always, "off" never, unset/"auto" only when no
+// embedding key is in the environment (production has one ⇒ unchanged there).
+// Read at call time, never frozen at import, so it stays testable in-process.
+
+const FTS_STOPWORDS: ReadonlySet<string> = new Set([
+  // EN
+  "the", "a", "an", "of", "to", "in", "on", "at", "for", "is", "was", "are", "were",
+  "be", "been", "do", "does", "did", "what", "when", "where", "who", "why", "how",
+  "which", "that", "this", "with", "from", "and", "or", "not",
+  // PT
+  "o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na",
+  "nos", "nas", "para", "por", "com", "que", "qual", "quando", "onde", "quem", "como",
+  "se", "é", "foi", "são", "era", "ser", "e", "ou", "não",
+]);
+
+export function ftsOrFallbackEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const mode = (env.NOX_FTS_OR_FALLBACK ?? "auto").trim().toLowerCase();
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  return !env.GEMINI_API_KEY && !env.OPENAI_API_KEY;
+}
+
+/** OR expression of the non-stopword terms, each double-quoted; null if none is left. */
+export function buildFtsOrQuery(sanitized: string): string | null {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const raw of sanitized.split(/\s+/)) {
+    const t = raw.toLowerCase();
+    if (!t || FTS_STOPWORDS.has(t) || seen.has(t)) continue;
+    seen.add(t);
+    terms.push(`"${raw.replace(/"/g, '""')}"`);
+  }
+  return terms.length > 0 ? terms.join(" OR ") : null;
+}
+
 export function search(
   query: string,
   limit: number = 5,
@@ -418,9 +461,8 @@ export function search(
   // Without a filter the statement is byte-identical to the unfiltered one.
   const temporal = buildTemporalClause(filter);
 
-  let rows: FtsRow[];
-  try {
-    rows = db.prepare(`
+  const runFts = (match: string): FtsRow[] =>
+    db.prepare(`
       SELECT c.id, c.source_file, c.chunk_type, c.chunk_text, c.source_date,
              c.tier, c.source_type, c.section, c.section_boost,
              c.pain, c.importance, c.retention_days, c.created_at, c.last_accessed_at,
@@ -430,9 +472,26 @@ export function search(
       JOIN chunks c ON c.id = chunks_fts.rowid
       WHERE chunks_fts MATCH ?${temporal ? ` AND ${temporal.sql}` : ""}
       ORDER BY rank LIMIT 20
-    `).all(sanitized, ...(temporal?.params ?? [])) as FtsRow[];
+    `).all(match, ...(temporal?.params ?? [])) as FtsRow[];
+
+  let rows: FtsRow[];
+  try {
+    rows = runFts(sanitized);
   } catch {
     return [];
+  }
+
+  // OR fallback: only when the AND query found nothing, so an existing result
+  // set is never reordered or extended. Same temporal fragment and params.
+  if (rows.length === 0 && ftsOrFallbackEnabled()) {
+    const orQuery = buildFtsOrQuery(sanitized);
+    if (orQuery) {
+      try {
+        rows = runFts(orQuery);
+      } catch {
+        return [];
+      }
+    }
   }
 
   const now = new Date();

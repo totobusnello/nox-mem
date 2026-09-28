@@ -209,6 +209,7 @@ A `vectorCoverage` value below 0.99 means some chunks are not yet embedded — r
 nox-mem search "query"     — hybrid search (FTS5 + semantic + RRF)
 nox-mem search "q" --as-of 2026-05-01        — time-travel: chunks that existed then
 nox-mem search "q" --changed-since 7d        — recency window (15m, 2h, 7d, 1w or ISO)
+NOX_FTS_OR_FALLBACK=auto|on|off — FTS5 OR retry (stopwords dropped) when the AND query finds nothing; auto (default) = only when no GEMINI_API_KEY/OPENAI_API_KEY is set, so natural-language questions work on keyless installs and keyed setups are unchanged
 nox-mem answer "question"  — grounded answer with citations (needs GEMINI_API_KEY)
 nox-mem ingest <file>      — ingest a markdown or entity file (one file per call)
 nox-mem reindex            — rebuild the index from $OPENCLAW_WORKSPACE (see warning below)
