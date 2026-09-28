@@ -524,7 +524,9 @@ export async function searchSemantic(
     // vec0 KNN cannot take a WHERE on chunk columns, so the temporal filter is
     // applied to the KNN candidates. Over-fetch when filtering, otherwise a
     // narrow window would leave the top-k almost empty.
-    const knnK = temporal ? Math.max(limit * 20, 200) : limit * 2;
+    // Capped: the candidate ids go into an IN (...) list, and an uncapped
+    // `?limit=5000` would ask for 100k bound variables (SQLite max 32766).
+    const knnK = temporal ? Math.max(limit * 2, Math.min(Math.max(limit * 20, 200), 2000)) : limit * 2;
     let rows = semanticSearch(db, queryEmbedding, knnK);
 
     if (temporal && rows.length > 0) {

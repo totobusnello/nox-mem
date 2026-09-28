@@ -35,6 +35,17 @@ test("parseFlexibleDate: date-only is midnight UTC", () => {
 
 test("parseFlexibleDate: full ISO", () => {
   assert.equal(parseFlexibleDate("2026-05-01T10:30:00Z", NOW).toISOString(), "2026-05-01T10:30:00.000Z");
+  assert.equal(parseFlexibleDate("2026-05-01T10:30:00-03:00", NOW).toISOString(), "2026-05-01T13:30:00.000Z");
+});
+
+test("parseFlexibleDate: ISO without offset is UTC, not local time", () => {
+  assert.equal(parseFlexibleDate("2026-05-01T10:30:00", NOW).toISOString(), "2026-05-01T10:30:00.000Z");
+});
+
+test("parseTemporalFilter: date-only as-of is END of day, changed-since START of day", () => {
+  const f = parseTemporalFilter({ asOf: "2026-05-01", changedSince: "2026-05-01" }, NOW)!;
+  assert.equal(f.asOf!.toISOString(), "2026-05-01T23:59:59.999Z");
+  assert.equal(f.changedSince!.toISOString(), "2026-05-01T00:00:00.000Z");
 });
 
 test("parseFlexibleDate: relative units count back from now", () => {
@@ -113,10 +124,15 @@ test("search: as-of keeps what existed then, plus legacy rows (spec: NULL = alwa
 });
 
 test("search: as-of compares datetimes, not strings ('2026-01-10 08:00:00' vs '2026-01-10T…')", () => {
-  // String comparison would say "2026-01-10 08:00:00" <= "2026-01-10T00:00:00.000Z"
-  // (space sorts before 'T') and wrongly keep old.md.
-  const f = parseTemporalFilter({ asOf: "2026-01-10" }, NOW);
+  // String comparison would say "2026-01-10 08:00:00" <= "2026-01-10T06:00:00.000Z"
+  // (space sorts before 'T') and wrongly keep old.md, created at 08:00.
+  const f = parseTemporalFilter({ asOf: "2026-01-10T06:00:00Z" }, NOW);
   assert.deepEqual(files(search("zebra", 10, false, f)), ["legacy.md"]);
+});
+
+test("search: date-only as-of includes rows created later that same day", () => {
+  const f = parseTemporalFilter({ asOf: "2026-01-10" }, NOW);
+  assert.deepEqual(files(search("zebra", 10, false, f)), ["legacy.md", "old.md"]);
 });
 
 test("search: changed-since picks created OR updated after the date", () => {

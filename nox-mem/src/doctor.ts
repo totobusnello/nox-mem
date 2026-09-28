@@ -34,10 +34,16 @@ export async function doctor(opts: { quiet?: boolean } = {}): Promise<void> {
     core.push({ name: "SQLite DB", status: "✅", detail: `schema v${version?.value || "?"}, ${formatSize(DB_PATH)} at ${DB_PATH}` });
 
     // 2. FTS5 index
-    const ftsCount = (db.prepare("SELECT COUNT(*) as c FROM chunks_fts").get() as { c: number }).c;
+    // chunks_fts is an external-content table: COUNT(*) on it reads the CONTENT
+    // table (chunks), so "indexed == chunks" held by construction and this check
+    // could never fire. The docsize shadow table has one row per document the
+    // index actually holds — measured: after an FTS 'delete' it drops to 0 while
+    // COUNT(*) on chunks_fts still reports every chunk (2026-09-28).
+    const hasDocsize = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'chunks_fts_docsize'").get() !== undefined;
+    const ftsCount = (db.prepare(`SELECT COUNT(*) as c FROM ${hasDocsize ? "chunks_fts_docsize" : "chunks_fts"}`).get() as { c: number }).c;
     const chunkCount = (db.prepare("SELECT COUNT(*) as c FROM chunks").get() as { c: number }).c;
     const ftsOk = ftsCount === chunkCount;
-    core.push({ name: "FTS5 Index", status: ftsOk ? "✅" : "⚠️", detail: `${ftsCount} indexed / ${chunkCount} chunks${ftsOk ? "" : " — MISMATCH, run nox-mem reindex"}` });
+    core.push({ name: "FTS5 Index", status: ftsOk ? "✅" : "⚠️", detail: `${ftsCount} indexed / ${chunkCount} chunks${ftsOk ? "" : ` — MISMATCH, rebuild the FTS index: sqlite3 "${DB_PATH}" "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')"`}` });
 
     // 3. Embeddings (semantic search). Missing key is a degraded mode, not a failure:
     //    search falls back to FTS5.
@@ -99,7 +105,9 @@ export async function doctor(opts: { quiet?: boolean } = {}): Promise<void> {
   // Installed but not active ⇒ ⚠️, because someone meant to run it.
   optional.push(await watcherCheck());
 
-  const coreFailed = core.some((c) => c.status === "❌");
+  // An FTS/chunks mismatch is ⚠️ on screen (fixable with reindex) but it breaks
+  // search, so scripts relying on --quiet must see it as a failure.
+  const coreFailed = core.some((c) => c.status === "❌" || (c.name === "FTS5 Index" && c.status !== "✅"));
 
   if (opts.quiet) {
     for (const check of core.filter((c) => c.status === "❌" || c.status === "⚠️")) {

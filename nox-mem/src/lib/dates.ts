@@ -2,8 +2,8 @@
  * src/lib/dates.ts — flexible date parsing for the temporal search filter (P3).
  *
  * Accepted:
- *   ISO 8601 date:   "2026-05-01"            (midnight UTC)
- *   ISO 8601 full:   "2026-05-01T12:00:00Z"
+ *   ISO 8601 date:   "2026-05-01"            (start of day UTC; end of day for as-of)
+ *   ISO 8601 full:   "2026-05-01T12:00:00Z"  (no offset ⇒ UTC)
  *   Relative:        "15m" | "2h" | "7d" | "1w"   (that long before `nowMs`)
  *
  * "1mo" is deliberately unsupported (months have no fixed length) — use "30d".
@@ -23,6 +23,7 @@ const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Requires at least YYYY-MM-DDTHH:MM so bare numbers or "May 1" are rejected
 // (Date.parse accepts both, with locale-dependent results).
 const ISO_FULL_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+const HAS_OFFSET_RE = /(Z|[+-]\d{2}:?\d{2})$/i;
 
 const UNIT_MS: Record<string, number> = {
   m: 60_000,
@@ -31,7 +32,11 @@ const UNIT_MS: Record<string, number> = {
   w: 604_800_000,
 };
 
-export function parseFlexibleDate(input: string, nowMs: number = Date.now()): Date {
+export function parseFlexibleDate(
+  input: string,
+  nowMs: number = Date.now(),
+  opts: { dateOnlyAs?: "start" | "end" } = {},
+): Date {
   const trimmed = String(input ?? "").trim();
   if (!trimmed) throw new TemporalParseError("temporal: empty date string");
 
@@ -42,8 +47,14 @@ export function parseFlexibleDate(input: string, nowMs: number = Date.now()): Da
   }
 
   let normalised: string | null = null;
-  if (DATE_ONLY_RE.test(trimmed)) normalised = `${trimmed}T00:00:00Z`;
-  else if (ISO_FULL_RE.test(trimmed)) normalised = trimmed;
+  if (DATE_ONLY_RE.test(trimmed)) {
+    // "as of 2026-01-10" reads as "by the end of that day"; "since 2026-01-10"
+    // as "from its start". Both in UTC.
+    normalised = opts.dateOnlyAs === "end" ? `${trimmed}T23:59:59.999Z` : `${trimmed}T00:00:00Z`;
+  } else if (ISO_FULL_RE.test(trimmed)) {
+    // No offset ⇒ UTC, same as date-only (JS would otherwise read it as local time).
+    normalised = HAS_OFFSET_RE.test(trimmed) ? trimmed : `${trimmed}Z`;
+  }
 
   const d = normalised ? new Date(normalised) : null;
   if (!d || isNaN(d.getTime())) {
@@ -69,7 +80,9 @@ export function parseTemporalFilter(
   nowMs: number = Date.now(),
 ): TemporalFilter | undefined {
   const filter: TemporalFilter = {};
-  if (raw.asOf != null && String(raw.asOf).trim() !== "") filter.asOf = parseFlexibleDate(raw.asOf, nowMs);
+  if (raw.asOf != null && String(raw.asOf).trim() !== "") {
+    filter.asOf = parseFlexibleDate(raw.asOf, nowMs, { dateOnlyAs: "end" });
+  }
   if (raw.changedSince != null && String(raw.changedSince).trim() !== "") {
     filter.changedSince = parseFlexibleDate(raw.changedSince, nowMs);
   }

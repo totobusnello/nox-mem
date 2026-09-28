@@ -228,7 +228,7 @@ Wire the MCP server into Claude Code:
 claude mcp add nox-mem -e NOX_DB_PATH="$HOME/.nox-mem/nox.db" -e GEMINI_API_KEY="$GEMINI_API_KEY" -- nox-mem-mcp
 ```
 
-The temporal filter is also on HTTP (`?as_of=` / `?changed_since=` on `/api/search`, or the same keys in a POST body) and MCP (`as_of` / `changed_since` on `nox_mem_search`). It is a hard SQL pre-filter on `created_at` / `updated_at` (ingestion time), not a ranking boost. An unparseable date is an error on every surface (exit 2 / HTTP 400 / MCP `isError`), never a silently unfiltered search.
+The temporal filter is also on HTTP (`?as_of=` / `?changed_since=` on `/api/search`, or the same keys in a POST body) and MCP (`as_of` / `changed_since` on `nox_mem_search`). It is a hard SQL pre-filter on `created_at` / `updated_at` (ingestion time), not a ranking boost. `as_of` answers *which chunks existed then*, not *what they said then*: there is no version history, so a chunk edited after the date comes back with its current text. A bare date means the whole day in UTC (`--as-of 2026-05-01` includes 23:59 that day; `--changed-since 2026-05-01` starts at 00:00); a time without an offset is read as UTC. An unparseable date is an error on every surface (exit 2 / HTTP 400 / MCP `isError`), never a silently unfiltered search.
 
 > ⚠️ **`reindex` rebuilds only from `$OPENCLAW_WORKSPACE`** (default `/root/.openclaw/workspace`). Chunks you added with `nox-mem ingest <file>` from anywhere else are **removed** by a reindex. A snapshot is taken first (`.nox-snapshots/` next to the DB), but on a standalone install you normally do not need `reindex` at all.
 
