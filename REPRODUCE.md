@@ -2,7 +2,7 @@
 
 This document explains **exactly what each headline number in the [README](./README.md) means, how it was measured, and how you can check it yourself.** We'd rather you find a caveat here than feel misled later.
 
-> **TL;DR on reproducibility.** The benchmark *harness* (adapters, datasets wiring, batch runner) lives in the private research repo `memoria-nox`, not in this package. What this repo ships is the **engine** the harness measures. You can reproduce the *engine-side* claims (latency, cost, footprint, retrieval behaviour) directly from this package; the *competitive* numbers (vs MemOS/Mem0/Zep) require the harness + the public datasets listed below. Where a number is a ceiling, a different metric than a competitor's, or measured under specific conditions, it is flagged — both here and in the README footnotes.
+> **TL;DR on reproducibility.** The benchmark *harness* (adapters, datasets wiring, batch runner) lives in the public research repo [`memoria-nox`](https://github.com/totobusnello/memoria-nox), not in this package. What this repo ships is the **engine** the harness measures. You can reproduce the *engine-side* claims (latency, cost, footprint, retrieval behaviour) directly from this package; the *competitive* numbers (vs MemOS/Mem0/Zep) require the harness + the public datasets listed below. Where a number is a ceiling, a different metric than a competitor's, or measured under specific conditions, it is flagged — both here and in the README footnotes.
 
 ---
 
@@ -14,9 +14,9 @@ These need only `nox-mem` + your own corpus (and a `GEMINI_API_KEY` for embeddin
 |---|---|
 | **KG-path latency ~2.5ms p50** | `nox-mem kg-query` / `GET /api/kg/path` over a populated graph; it's a pure SQLite + regex traversal, no network call. Time it locally. |
 | **KG-path cost $0/query** | Same path issues **no LLM/embedding API call** — inspect the code (`src/knowledge-graph.ts`, `src/impact.ts`). Cost is literally an SQLite read. |
-| **Single-process footprint (~400MB RSS)** | Run `node dist/api-server.js` against a 100k-chunk DB and read RSS. One process, one SQLite file — no sidecar services. |
+| **Single-process footprint (~400MB RSS)** | Run `nox-mem-api` against a 100k-chunk DB and read the process RSS. One process, one SQLite file — no sidecar services. |
 | **Hybrid retrieval behaviour** | `nox-mem search "<q>"` returns the BM25 ∥ semantic ∥ RRF merge; `--no-hybrid` isolates BM25. Inspect `src/search.ts`. |
-| **Tests** | `npm test` → 586 pass / 0 fail / 4 skip (skips are key-gated E2E). The suite runs from source; no hidden gates. |
+| **Tests** | `cd nox-mem && npm ci && npm test` → 0 fail, 4 skips (key-gated E2E). The suite runs from source; no hidden gates. The pass count grows with every release, so read it off your own run: the number that was in this table (586) is out of date. |
 
 ## What needs the research harness + public datasets
 
