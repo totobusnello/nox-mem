@@ -80,7 +80,7 @@ bash install.sh
 
 **O que acontece:**
 1. Verifica Node.js >= 20 (e as ferramentas de build, se faltarem)
-2. `npm install -g nox-mem` (use `NOX_MEM_VERSION=3.4.0 bash install.sh` para fixar uma versão)
+2. `npm install -g nox-mem` (use `NOX_MEM_VERSION=3.5.0 bash install.sh` para fixar uma versão)
 3. Cria `~/.nox-mem/` (com `memory/` dentro) e um `.env` em `~/.nox-mem/.env`
 
 **Fora do padrão (você liga com uma flag):**
