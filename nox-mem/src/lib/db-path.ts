@@ -19,7 +19,7 @@
  * taking the database with it.
  */
 
-import { existsSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve, sep } from "path";
 import { fileURLToPath } from "url";
@@ -51,4 +51,16 @@ export function resolveDbPath(): string {
 /** True when the path sits inside a node_modules tree (wiped by npm update/uninstall). */
 export function isInsideNodeModules(p: string): boolean {
   return resolve(p).split(sep).includes("node_modules");
+}
+
+/**
+ * mkdir -p the directory that will hold the database, mode 0700 (the DB holds
+ * the user's notes). No-op when it already exists, so an existing directory's
+ * permissions are never changed. Returns true when it created anything.
+ */
+export function ensureDbParentDir(dbPath: string): boolean {
+  const dir = dirname(resolve(dbPath));
+  if (existsSync(dir)) return false;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return true;
 }

@@ -7,7 +7,7 @@ Sessão com agente
       ↓
 Nota diária (memory/YYYY-MM-DD.md)
       ↓
-Consolidação automática às 23h (Ollama extrai fatos)
+Consolidação automática às 23h (Gemini extrai fatos; Groq e Claude como fallback)
       ↓
 Arquivos de tópico (decisions, lessons, people, projects, pending)
       ↓
@@ -35,6 +35,6 @@ Primer recovery (nox-mem primer → contexto pós-compactação)
 | `nox-mem primer` | Gera resumo de contexto (~500 tokens) |
 | `nox-mem stats` | Mostra estatísticas do índice |
 | `nox-mem consolidate` | Extrai fatos das notas diárias com IA |
-| `nox-mem digest` | Gera resumo semanal com Ollama |
+| `nox-mem digest` | Gera resumo semanal (Gemini ou Groq; Ollama local como último recurso) |
 | `nox-mem reindex` | Reindexa toda a memória |
 | `nox-mem doctor` | Verifica saúde do sistema |

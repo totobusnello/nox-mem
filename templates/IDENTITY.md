@@ -9,7 +9,7 @@
 ## Memória
 Este agente usa **NOX-Supermem** para memória persistente.
 - Índice SQLite com FTS5 — busca em <1 segundo
-- Consolidação automática com IA local (Ollama)
+- Consolidação automática com IA (Gemini, com Groq e Claude como fallback)
 - Recovery automático após compactação
 
 ## Como me usar

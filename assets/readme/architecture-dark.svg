@@ -265,7 +265,7 @@
     <rect x="60" y="600" width="1080" height="138" rx="14" fill="url(#node-api-d)" stroke="#00C896" stroke-width="1.5"/>
   </g>
   <circle cx="80" cy="628" r="4" fill="#00C896"/>
-  <text x="94" y="624" fill="#00E0A8" font-family="'JetBrains Mono', 'Menlo', monospace" font-size="9" letter-spacing="1.5" font-weight="700">HYBRID SEARCH API · :18800</text>
+  <text x="94" y="624" fill="#00E0A8" font-family="'JetBrains Mono', 'Menlo', monospace" font-size="9" letter-spacing="1.5" font-weight="700">HYBRID SEARCH API · :18802</text>
   <text x="94" y="652" fill="#EBEBEF" font-family="'Inter', system-ui, sans-serif" font-size="17" font-weight="600">Surface for agents, dashboards, MCP</text>
 
   <g>

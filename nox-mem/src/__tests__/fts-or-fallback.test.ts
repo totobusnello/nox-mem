@@ -3,7 +3,7 @@
 // FTS5 ANDs a space-separated query, so "when was the zebra migration" matches
 // nothing unless every filler word is in the chunk. search() retries with an OR
 // of the content terms, but ONLY when the AND query returned zero rows, and only
-// when NOX_FTS_OR_FALLBACK allows it (auto = no embedding key in the env).
+// when NOX_FTS_OR_FALLBACK allows it (auto = the resolved embedding provider has no key).
 //
 // The DB is isolated with NOX_DB_PATH in a mkdtemp BEFORE db.js is imported.
 //
@@ -54,6 +54,8 @@ after(() => {
 
 // Each test sets exactly the env it needs; the gate must be read per call.
 beforeEach(() => {
+  delete process.env.NOX_EMBEDDING_PROVIDER;
+  delete process.env.NOX_EMBED_PROVIDER;
   delete process.env.GEMINI_API_KEY;
   delete process.env.OPENAI_API_KEY;
   delete process.env.NOX_FTS_OR_FALLBACK;
@@ -82,9 +84,29 @@ test("ftsOrFallbackEnabled: gate matrix", () => {
   assert.equal(ftsOrFallbackEnabled({ NOX_EMBED_API_KEY: "k" }), false);
   assert.equal(ftsOrFallbackEnabled({ NOX_FTS_OR_FALLBACK: "auto" }), true);
   assert.equal(ftsOrFallbackEnabled({ GEMINI_API_KEY: "k" }), false);
-  assert.equal(ftsOrFallbackEnabled({ OPENAI_API_KEY: "k" }), false);
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBEDDING_PROVIDER: "openai", OPENAI_API_KEY: "k" }), false);
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBED_PROVIDER: "openai", OPENAI_API_KEY: "k" }), false);
   assert.equal(ftsOrFallbackEnabled({ NOX_FTS_OR_FALLBACK: "on", GEMINI_API_KEY: "k" }), true);
   assert.equal(ftsOrFallbackEnabled({ NOX_FTS_OR_FALLBACK: "off" }), false);
+});
+
+test("ftsOrFallbackEnabled: only the RESOLVED provider's key counts (stray OPENAI_API_KEY)", () => {
+  // Default provider is gemini: an OPENAI_API_KEY left in the shell for other
+  // tools is not an embedding key for it, so the fallback must stay ON.
+  assert.equal(ftsOrFallbackEnabled({ OPENAI_API_KEY: "k" }), true);
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBEDDING_PROVIDER: "gemini", OPENAI_API_KEY: "k" }), true);
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBED_PROVIDER: "gemini", OPENAI_API_KEY: "k" }), true);
+  // Mirror image: provider=openai and only a Gemini key ⇒ no usable key ⇒ ON.
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBEDDING_PROVIDER: "openai", GEMINI_API_KEY: "k" }), true);
+  // The provider-agnostic key names still apply to gemini and openai.
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBEDDING_PROVIDER: "openai", NOX_EMBEDDING_API_KEY: "k" }), false);
+  // voyage is a stub that cannot embed; unknown names throw at selection: no
+  // usable embeddings either way ⇒ fallback ON.
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBEDDING_PROVIDER: "voyage", GEMINI_API_KEY: "k" }), true);
+  assert.equal(ftsOrFallbackEnabled({ NOX_EMBEDDING_PROVIDER: "nope", GEMINI_API_KEY: "k" }), true);
+  // Explicit modes keep overriding, whatever the keys are.
+  assert.equal(ftsOrFallbackEnabled({ NOX_FTS_OR_FALLBACK: "off", OPENAI_API_KEY: "k" }), false);
+  assert.equal(ftsOrFallbackEnabled({ NOX_FTS_OR_FALLBACK: "on", GEMINI_API_KEY: "k" }), true);
 });
 
 // ─── search() ────────────────────────────────────────────────────────────────
@@ -97,8 +119,18 @@ test("(2) auto WITH an embedding key in the env: same question returns [] as bef
   process.env.GEMINI_API_KEY = "test-key";
   assert.deepEqual(search(QUESTION, 10, false), []);
   delete process.env.GEMINI_API_KEY;
+  process.env.NOX_EMBEDDING_PROVIDER = "openai";
   process.env.OPENAI_API_KEY = "test-key";
-  assert.deepEqual(search(QUESTION, 10, false), []);
+  try {
+    assert.deepEqual(search(QUESTION, 10, false), []);
+  } finally {
+    delete process.env.NOX_EMBEDDING_PROVIDER;
+  }
+});
+
+test("(2b) a stray OPENAI_API_KEY with the default gemini provider keeps the fallback ON", () => {
+  process.env.OPENAI_API_KEY = "stray-key";
+  assert.deepEqual(files(search(QUESTION, 10, false)), ["zebra.md"]);
 });
 
 test("(3) off: [] even without a key", () => {

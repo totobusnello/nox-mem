@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 // @ts-ignore - sqlite-vec ships no type declarations for this helper
 import { getLoadablePath as vecLoadablePath } from "sqlite-vec";
-import { resolveDbPathWithSource, isInsideNodeModules } from "./lib/db-path.js";
+import { resolveDbPathWithSource, isInsideNodeModules, ensureDbParentDir } from "./lib/db-path.js";
 
 let _warnedNodeModules = false;
 
@@ -34,12 +34,30 @@ const SCHEMA_VERSION = 19;
 // Large-DB ingest guard (postmortem 2026-05-19)
 // ────────────────────────────────────────────────────────────────────────────
 // If the resolved DB has more than PROD_CHUNK_THRESHOLD chunks and the caller
-// has not set NOX_ALLOW_PROD_INGEST=1, abort before any write.  This prevents
-// eval/test ingests from silently polluting a large production DB.
+// has not opted in, abort before any write. This stops an eval/test ingest from
+// silently polluting a large, real database.
 //
-// Threshold: 10,000 chunks. Production is at 68k+; eval DBs start fresh.
-// Override: NOX_ALLOW_PROD_INGEST=1  (explicit, auditable, required for prod ops)
+// Threshold: 10,000 chunks. A personal memory that grows past it will hit this
+// on the next `ingest`/`watch`; that is expected, and the opt-in is one flag:
+//   nox-mem ingest --allow-prod <files...>      (also: ingest-entity, watch)
+//   NOX_ALLOW_PROD_INGEST=1 nox-mem ingest ...  (works for every command)
 const PROD_CHUNK_THRESHOLD = 10_000;
+
+/** The text printed when the guard trips. Exported so the wording is testable. */
+export function largeDbGuardMessage(operation: string, dbPath: string, chunkCount: number): string {
+  return [
+    `[nox-mem] ABORT: '${operation}' refused because this database is large.`,
+    `  DB path:     ${dbPath}`,
+    `  Chunk count: ${chunkCount} (guard limit: ${PROD_CHUNK_THRESHOLD})`,
+    `  Why: past ${PROD_CHUNK_THRESHOLD} chunks the database is assumed to be one you care about, and this`,
+    `  check stops a test or eval script from writing into it by accident.`,
+    `  If this IS the database you want to write to, confirm it with either:`,
+    `    nox-mem ${operation} --allow-prod ...          (ingest, ingest-entity, watch)`,
+    `    NOX_ALLOW_PROD_INGEST=1 nox-mem ${operation} ...`,
+    `  If it is not, point NOX_DB_PATH at a separate database instead, e.g.:`,
+    `    NOX_DB_PATH=/tmp/scratch.db nox-mem ${operation} ...`,
+  ].join("\n");
+}
 
 export function checkLargeDbIngestGuard(db: Database.Database, operation: string): void {
   if (process.env.NOX_ALLOW_PROD_INGEST === "1") return;
@@ -48,18 +66,7 @@ export function checkLargeDbIngestGuard(db: Database.Database, operation: string
   const chunkCount = row?.n ?? 0;
 
   if (chunkCount > PROD_CHUNK_THRESHOLD) {
-    const msg = [
-      `[db] ABORT: Large-DB ingest guard triggered on operation '${operation}'.`,
-      `  DB path:     ${DB_PATH}`,
-      `  Chunk count: ${chunkCount} (threshold: ${PROD_CHUNK_THRESHOLD})`,
-      `  This DB appears to be the production nox-mem.db.`,
-      `  If you intend to ingest into production, set:`,
-      `    NOX_ALLOW_PROD_INGEST=1 nox-mem ${operation} ...`,
-      `  If you are running an eval/ablation, ensure NOX_DB_PATH points to an`,
-      `  isolated eval DB (e.g. /tmp/entity-eval.db), NOT the production path.`,
-      `  (Root cause of the 2026-05-19 wipe incident — see docs/INCIDENTS.md)`,
-    ].join("\n");
-    console.error(msg);
+    console.error(largeDbGuardMessage(operation, DB_PATH, chunkCount));
     process.exit(1);
   }
 }
@@ -68,9 +75,15 @@ let _db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (_db && _db.open) return _db;
-  if (_resolvedDb.source === "standalone-default") {
-    mkdirSync(dirname(DB_PATH), { recursive: true });
-  } else if (_resolvedDb.source === "legacy-package" && isInsideNodeModules(DB_PATH) && !_warnedNodeModules) {
+  // Create the parent directory for every source that can point at a directory
+  // that does not exist yet (an explicit NOX_DB_PATH, the OPENCLAW_WORKSPACE
+  // layout, the ~/.nox-mem default) instead of crashing with "Cannot open
+  // database because the directory does not exist". Legacy package paths
+  // already exist by definition.
+  if (_resolvedDb.source !== "legacy-package") {
+    ensureDbParentDir(DB_PATH);
+  }
+  if (_resolvedDb.source === "legacy-package" && isInsideNodeModules(DB_PATH) && !_warnedNodeModules) {
     _warnedNodeModules = true;
     console.error(
       `[nox-mem] WARNING: database is inside node_modules (${DB_PATH}); \`npm update -g\` replaces that directory. ` +
