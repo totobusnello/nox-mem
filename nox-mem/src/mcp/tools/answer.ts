@@ -27,6 +27,8 @@ import {
   recordAnswer,
   type TelemetryStore,
 } from "../../lib/answer/telemetry.js";
+import { resolveTemporalFilter } from "../../lib/answer/temporal.js";
+import { TemporalParseError, type TemporalFilter } from "../../lib/dates.js";
 
 // ─── MCP wire types (minimal — avoids hard dep on SDK package) ────────────
 
@@ -61,6 +63,16 @@ export const INPUT_SCHEMA = {
     model: { type: "string" },
     temperature: { type: "number", minimum: 0, maximum: 1 },
     no_citations: { type: "boolean", default: false },
+    as_of: {
+      type: "string",
+      description:
+        "Time-travel: only chunks that existed at this date (ISO 8601 like 2026-05-01, or relative like 7d, 2h, 1w)",
+    },
+    changed_since: {
+      type: "string",
+      description:
+        "Recency window: only chunks created or updated after this date (ISO 8601 or relative)",
+    },
   },
   required: ["question"],
   additionalProperties: false,
@@ -76,6 +88,7 @@ interface ParsedInput {
   model?: string;
   temperature?: number;
   noCitations: boolean;
+  temporal?: TemporalFilter;
 }
 
 class McpInputError extends Error {}
@@ -133,6 +146,14 @@ export function parseInput(input: unknown): ParsedInput {
     }
     parsed.noCitations = o.no_citations;
   }
+  // An unparseable date is invalid_input (isError), never a silently unfiltered answer.
+  try {
+    const temporal = resolveTemporalFilter({ asOf: o.as_of, changedSince: o.changed_since });
+    if (temporal !== undefined) parsed.temporal = temporal;
+  } catch (err) {
+    if (err instanceof TemporalParseError) throw new McpInputError(err.message);
+    throw err;
+  }
   return parsed;
 }
 
@@ -174,6 +195,7 @@ export const noxMemAnswerTool: McpToolDefinition = {
     if (parsed.provider !== undefined) opts.provider = parsed.provider;
     if (parsed.model !== undefined) opts.model = parsed.model;
     if (parsed.temperature !== undefined) opts.temperature = parsed.temperature;
+    if (parsed.temporal !== undefined) opts.temporal = parsed.temporal;
 
     const run = ctx?.answer ?? defaultAnswer;
     try {

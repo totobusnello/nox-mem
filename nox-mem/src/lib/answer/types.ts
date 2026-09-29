@@ -12,6 +12,7 @@
  * so downstream T8 (CLI) and T9 (HTTP) can pick either without churn.
  */
 import type { LLMProvider } from "./provider.js";
+import type { TemporalFilter } from "../dates.js";
 
 /** Request to answer(): {question, topK, maxTokens, provider, model, temperature}. */
 export interface AnswerOpts {
@@ -33,10 +34,16 @@ export interface AnswerOpts {
    */
   providerOverride?: LLMProvider;
   /**
+   * Temporal pre-filter (same semantics as `search --as-of/--changed-since`, built by
+   * `resolveTemporalFilter`). Restricts which chunks retrieval may return; it is a hard
+   * SQL filter inside searchHybrid, not a ranking change. Undefined = no filter.
+   */
+  temporal?: TemporalFilter;
+  /**
    * Optional retrieval injection point for testing/mocking.
    * If set, used INSTEAD of the real hybrid search wrapper.
    */
-  retrieveOverride?: (question: string, topK: number) => Promise<RetrievedChunk[]>;
+  retrieveOverride?: (question: string, topK: number, filter?: TemporalFilter) => Promise<RetrievedChunk[]>;
 }
 
 /** Alias kept for kickoff-doc consistency. */

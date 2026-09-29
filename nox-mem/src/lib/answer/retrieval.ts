@@ -18,13 +18,14 @@
 
 import type { RawChunk, RetrievedChunk } from "./types.js";
 import { searchHybrid } from "../../search.js";
+import type { TemporalFilter } from "../dates.js";
 
 
 /**
  * Signature for the underlying hybrid search call.
  * In prod this is bound to `hybridSearch()` from existing search module.
  */
-export type RawSearchFn = (question: string, topK: number) => Promise<RawChunk[]>;
+export type RawSearchFn = (question: string, topK: number, filter?: TemporalFilter) => Promise<RawChunk[]>;
 
 let injectedSearch: RawSearchFn | null = null;
 
@@ -43,8 +44,13 @@ export function __setRawSearchForTests(fn: RawSearchFn | null): void {
  * throw a clear error if called without injection — keeps tests honest
  * (must always inject) and prevents accidental network calls.
  */
-async function defaultRawSearch(question: string, topK: number): Promise<RawChunk[]> {
-  const hits = await searchHybrid(question, topK);
+async function defaultRawSearch(
+  question: string,
+  topK: number,
+  filter?: TemporalFilter
+): Promise<RawChunk[]> {
+  // trackAccess stays at its default (true), exactly as before the filter existed.
+  const hits = await searchHybrid(question, topK, true, filter);
   return hits.map((h) => ({
     chunk_id: h.id ?? 0,
     file_path: h.source_file,
@@ -58,11 +64,13 @@ async function defaultRawSearch(question: string, topK: number): Promise<RawChun
  *
  * @param question  Natural-language input.
  * @param topK      Max chunks to return. Caller should pre-clamp via config.
+ * @param filter    Optional temporal pre-filter, handed to searchHybrid untouched.
  * @returns         Deduplicated, marker-assigned chunks ordered by score desc.
  */
 export async function retrieveContext(
   question: string,
-  topK: number
+  topK: number,
+  filter?: TemporalFilter
 ): Promise<RetrievedChunk[]> {
   if (!question || question.trim().length === 0) {
     return [];
@@ -70,7 +78,7 @@ export async function retrieveContext(
   if (topK <= 0) return [];
 
   const search = injectedSearch ?? defaultRawSearch;
-  const raw = await search(question, topK * 2); // overfetch to survive dedupe
+  const raw = await search(question, topK * 2, filter); // overfetch to survive dedupe
 
   // Sort by score desc (defensive — most hybrid impls already do this, but
   // we cannot trust ordering of an injected/mocked search).

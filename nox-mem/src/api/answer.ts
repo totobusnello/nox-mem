@@ -34,6 +34,8 @@ import {
   recordAnswer,
   type TelemetryStore,
 } from "../lib/answer/telemetry.js";
+import { resolveTemporalFilter } from "../lib/answer/temporal.js";
+import { TemporalParseError, type TemporalFilter } from "../lib/dates.js";
 
 // ─── Request / Response wire types ───────────────────────────────────────
 
@@ -46,6 +48,12 @@ export interface AnswerHttpRequest {
   temperature?: number;
   no_citations?: boolean;
   trace_id?: string;
+  /** Time-travel: only chunks that existed at this date (ISO 8601 or 7d/2h/1w). */
+  as_of?: string;
+  /** Recency window: only chunks created/updated after this date. */
+  changed_since?: string;
+  /** Derived by validateBody from as_of/changed_since; not a wire field. */
+  temporal?: TemporalFilter;
 }
 
 export interface AnswerHttpResponseSuccess {
@@ -168,6 +176,18 @@ export function validateBody(body: unknown): AnswerHttpRequest {
     }
     req.trace_id = b.trace_id;
   }
+  // An unparseable date is a 400, never a silently unfiltered answer.
+  try {
+    const temporal = resolveTemporalFilter({ asOf: b.as_of, changedSince: b.changed_since });
+    if (temporal !== undefined) req.temporal = temporal;
+  } catch (err) {
+    if (err instanceof TemporalParseError) {
+      throw new HttpError(400, "invalid_body", err.message);
+    }
+    throw err;
+  }
+  if (typeof b.as_of === "string") req.as_of = b.as_of;
+  if (typeof b.changed_since === "string") req.changed_since = b.changed_since;
   return req;
 }
 
@@ -240,6 +260,7 @@ export async function handleAnswerRequest(args: HandleAnswerArgs): Promise<Handl
   if (req.temperature !== undefined) opts.temperature = req.temperature;
   if (req.provider !== undefined) opts.provider = req.provider;
   if (req.model !== undefined) opts.model = req.model;
+  if (req.temporal !== undefined) opts.temporal = req.temporal;
 
   const run = args.answer ?? defaultAnswer;
   try {
@@ -337,5 +358,7 @@ export const REQUEST_SCHEMA = {
     temperature: { type: "number", minimum: 0, maximum: 1 },
     no_citations: { type: "boolean" },
     trace_id: { type: "string", maxLength: 64 },
+    as_of: { type: "string", minLength: 1 },
+    changed_since: { type: "string", minLength: 1 },
   },
 } as const;
