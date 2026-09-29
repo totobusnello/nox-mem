@@ -223,15 +223,30 @@ if $WITH_CRON; then
       dry "Install crons: vectorize every 4h${CRON_CONSOLIDATE:+, consolidate 23:00 daily} (sourcing $ENV_DEST)"
     else
       mkdir -p "$LOG_DIR"
-      (
-        # A user with no crontab makes `crontab -l` exit 1; under pipefail that
-        # used to abort the script silently. `|| true` keeps it going.
-        (crontab -l 2>/dev/null || true) | sed "/$MARKER_START/,/$MARKER_END/d"
+      # Never `crontab -l | transform | crontab -`: if the read fails for any
+      # reason other than "no crontab yet", that pipe installs an empty table
+      # and wipes the user's jobs. Read to a file, build to a file, check that
+      # every foreign line survived, and only then install.
+      CRON_CUR="$(mktemp)"; CRON_NEW="$(mktemp)"
+      trap 'rm -f "$CRON_CUR" "$CRON_NEW"' EXIT
+      if ! crontab -l >"$CRON_CUR" 2>"$CRON_NEW"; then
+        if grep -qi "no crontab" "$CRON_NEW"; then
+          : >"$CRON_CUR"
+        else
+          err "could not read the current crontab ($(cat "$CRON_NEW")) — leaving it untouched"
+        fi
+      fi
+      {
+        sed "/$MARKER_START/,/$MARKER_END/d" "$CRON_CUR"
         echo "$MARKER_START"
         echo "$CRON_VECTORIZE"
-        [[ -n "$CRON_CONSOLIDATE" ]] && echo "$CRON_CONSOLIDATE"
+        if [[ -n "$CRON_CONSOLIDATE" ]]; then echo "$CRON_CONSOLIDATE"; fi
         echo "$MARKER_END"
-      ) | crontab -
+      } >"$CRON_NEW"
+      KEPT_BEFORE=$(sed "/$MARKER_START/,/$MARKER_END/d" "$CRON_CUR" | wc -l)
+      KEPT_AFTER=$(sed "/$MARKER_START/,/$MARKER_END/d" "$CRON_NEW" | wc -l)
+      [[ "$KEPT_BEFORE" -eq "$KEPT_AFTER" ]] || err "crontab rebuild would change $KEPT_BEFORE existing lines into $KEPT_AFTER — aborting"
+      crontab "$CRON_NEW"
       log "Crons installed (vectorize every 4h${CRON_CONSOLIDATE:+, consolidate daily 23:00})"
     fi
   fi
