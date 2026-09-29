@@ -14,12 +14,14 @@
  *   --no-cite            suppress citation block (markers still kept inline)
  *   --no-citations       strip [chunk_N] markers from rendered answer too
  *   --json               machine-readable JSON; suppresses pretty output
+ *   --as-of X            only chunks that existed at X (ISO 8601 or 7d/2h/1w)
+ *   --changed-since Y    only chunks created/updated after Y (ISO 8601 or 7d/2h/1w)
  *   --session-id X       passthrough for telemetry correlation
  *   --help, -h           print usage and exit 0
  *
  * Exit codes (kickoff §6 status-code parity, mapped to shell-friendly ints):
  *   0   ok
- *   2   invalid argv (bad flag, missing question)
+ *   2   invalid argv (bad flag, missing question, unparseable --as-of/--changed-since)
  *   3   retrieval_empty
  *   4   hallucination_after_retry
  *   5   llm_error / llm_timeout
@@ -36,6 +38,8 @@ import {
   recordAnswer,
   type TelemetryStore,
 } from "../lib/answer/telemetry.js";
+import { resolveTemporalFilter } from "../lib/answer/temporal.js";
+import { TemporalParseError } from "../lib/dates.js";
 
 // ─── Argv parsing ─────────────────────────────────────────────────────────
 
@@ -46,6 +50,10 @@ export interface ParsedArgs {
   provider?: string;
   model?: string;
   temperature?: number;
+  /** raw --as-of value (validated in runCli, before any retrieval) */
+  asOf?: string;
+  /** raw --changed-since value (validated in runCli, before any retrieval) */
+  changedSince?: string;
   /** include citation block beneath answer */
   showCitations: boolean;
   /** also strip [chunk_N] markers from the answer text itself */
@@ -138,6 +146,18 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         out.temperature = n;
         break;
       }
+      case "--as-of": {
+        const v = argv[++i];
+        if (v === undefined) throw new CliArgError(`${tok} requires a value`);
+        out.asOf = v;
+        break;
+      }
+      case "--changed-since": {
+        const v = argv[++i];
+        if (v === undefined) throw new CliArgError(`${tok} requires a value`);
+        out.changedSince = v;
+        break;
+      }
       case "--session-id": {
         const v = argv[++i];
         if (v === undefined) throw new CliArgError(`${tok} requires a value`);
@@ -174,6 +194,10 @@ Flags:
   --provider X      'gemini' (default) | 'mock'
   --model Y         model id (default gemini-2.5-flash-lite per D41 #1)
   --temperature N   0..1, default 0.2
+  --as-of X         time-travel: only chunks that existed at X
+                    (ISO 8601 like 2026-05-01, or relative like 7d, 2h, 1w)
+  --changed-since Y recency window: only chunks created or updated after Y
+                    (ISO 8601 or relative); combine with --as-of for a range
   --cite            include numbered citation block (default)
   --no-cite         suppress citation block
   --no-citations    also strip [chunk_N] markers from answer text
@@ -184,6 +208,8 @@ Flags:
 Examples:
   nox-mem answer "What is the salience formula?"
   nox-mem answer "Which retention default for lessons?" --top-k 12 --json
+  nox-mem answer "What was decided about X?" --as-of 2026-05-01
+  nox-mem answer "What changed on X?" --changed-since 7d
   NOX_ANSWER_MODEL=gemini-2.5-flash nox-mem answer "Provider swap test"
 
 Exit codes: 0 ok | 2 bad argv | 3 retrieval_empty | 4 hallucination_after_retry | 5 llm_error
@@ -249,7 +275,20 @@ export async function runCli(opts: RunCliOpts): Promise<number> {
     return 0;
   }
 
+  // An unparseable (or blank) date is an error, never a silently unfiltered answer.
+  let temporal;
+  try {
+    temporal = resolveTemporalFilter({ asOf: parsed.asOf, changedSince: parsed.changedSince });
+  } catch (err) {
+    if (err instanceof TemporalParseError) {
+      opts.stderr(`error: ${err.message}`);
+      return 2;
+    }
+    throw err;
+  }
+
   const callOpts: AnswerOpts = { question: parsed.question };
+  if (temporal !== undefined) callOpts.temporal = temporal;
   if (parsed.topK !== undefined) callOpts.topK = parsed.topK;
   if (parsed.maxTokens !== undefined) callOpts.maxTokens = parsed.maxTokens;
   if (parsed.provider !== undefined) callOpts.provider = parsed.provider;

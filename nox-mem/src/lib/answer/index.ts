@@ -8,7 +8,7 @@
  *
  * Pipeline (T1-T4 scope + minimal T5/T6 anti-hallucination retry-once):
  *   1. resolveConfig(opts)                 → ResolvedConfig
- *   2. retrieveContext(question, topK)     → RetrievedChunk[]
+ *   2. retrieveContext(question, topK, temporal?) → RetrievedChunk[]
  *   3. buildPrompt(question, chunks)       → {system, user}
  *   4. provider.complete(prompt + cfg)     → LLMCallResult
  *   5. parseCitations(text, chunks)        → { citations, hallucinated[] }
@@ -45,6 +45,7 @@ export type { LLMProvider, LLMCallOpts, LLMCallResult } from "./provider.js";
 export { buildPrompt, buildRetryPrompt } from "./prompt.js";
 export { retrieveContext, __setRawSearchForTests } from "./retrieval.js";
 export { resolveConfig } from "./config.js";
+export { resolveTemporalFilter } from "./temporal.js";
 
 /** Thrown when the pipeline produces an unrecoverable failure. */
 export class AnswerError extends Error {
@@ -79,7 +80,7 @@ export async function answer(opts: AnswerOpts): Promise<AnswerResult> {
   const retrieve = opts.retrieveOverride ?? retrieveContext;
 
   // ── Step 2: retrieval ──────────────────────────────────────────────────
-  const chunks = await retrieve(opts.question, cfg.topK);
+  const chunks = await retrieve(opts.question, cfg.topK, opts.temporal);
 
   if (chunks.length === 0) {
     // Honour kickoff §6 retrieval_empty: short-circuit, no LLM spend.

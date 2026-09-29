@@ -59,4 +59,3 @@ Thumbs.db
 nox-mem-watcher.service
 nox-mem-watch.sh
 config.example.json
-prompts/

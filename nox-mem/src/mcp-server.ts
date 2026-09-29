@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * nox-mem MCP Server — exposes memory tools via Model Context Protocol (stdio)
- * Tools: search, stats, primer, ingest
+ * Tools: search, stats, primer, ingest, answer, ... (see TOOLS below)
  */
 import { getDb, closeDb } from "./db.js";
 import { search, searchHybrid, formatResults } from "./search.js";
@@ -16,6 +16,7 @@ import { primer } from "./primer.js";
 import { createInterface } from "readline";
 import { VERSION } from "./version.js";
 import { parseTemporalFilter } from "./lib/dates.js";
+import { noxMemAnswerTool } from "./mcp/tools/answer.js";
 
 const SERVER_INFO = {
   name: "nox-mem",
@@ -202,8 +203,14 @@ const TOOLS = [
       },
       required: ["title", "steps"],
     },
-  }
-
+  },
+  // `nox_mem_answer`: definition + handler live in src/mcp/tools/answer.ts (single code
+  // path shared with the CLI and POST /api/answer via lib/answer). Only registered here.
+  {
+    name: noxMemAnswerTool.name,
+    description: noxMemAnswerTool.description,
+    inputSchema: noxMemAnswerTool.inputSchema,
+  },
 ];
 
 function sendResponse(id: number | string, result: unknown): void {
@@ -238,6 +245,20 @@ async function handleRequest(req: { id: number | string; method: string; params?
     case "tools/call": {
       const toolName = (params as Record<string, unknown>)?.name as string;
       const args = ((params as Record<string, unknown>)?.arguments ?? {}) as Record<string, unknown>;
+
+      // The answer tool returns a ready CallToolResult ({content, isError?}): invalid input,
+      // a missing GEMINI_API_KEY (llm_error) and every AnswerError come back as isError.
+      if (toolName === noxMemAnswerTool.name) {
+        try {
+          sendResponse(id, await noxMemAnswerTool.handler(args));
+        } catch (err) {
+          sendResponse(id, {
+            content: [{ type: "text", text: "Error: " + (err as Error).message }],
+            isError: true,
+          });
+        }
+        break;
+      }
 
       try {
         let text: string;
@@ -400,16 +421,26 @@ async function handleRequest(req: { id: number | string; method: string; params?
 
 const rl = createInterface({ input: process.stdin });
 
+// In-flight requests. stdin closing (e.g. `printf '...' | nox-mem-mcp`) must not
+// cut off async tools (answer, search, reflect) before they respond.
+const pending = new Set<Promise<void>>();
+
 rl.on("line", (line) => {
+  let req;
   try {
-    const req = JSON.parse(line);
-    handleRequest(req);
+    req = JSON.parse(line);
   } catch {
     sendError(null, -32700, "Parse error");
+    return;
   }
+  const p: Promise<void> = handleRequest(req)
+    .catch((err) => sendError(req?.id ?? null, -32603, (err as Error).message))
+    .finally(() => pending.delete(p));
+  pending.add(p);
 });
 
-rl.on("close", () => {
+rl.on("close", async () => {
+  await Promise.allSettled([...pending]);
   closeDb();
   process.exit(0);
 });

@@ -44,6 +44,9 @@
   },
   "files": [
     "dist",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.js",
+    "prompts",
     "README.md",
     "LICENSE"
   ],
