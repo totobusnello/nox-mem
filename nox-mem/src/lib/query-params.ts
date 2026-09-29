@@ -11,12 +11,10 @@
 const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 export function parseQuery(url: string): Record<string, string> {
-  const params: Record<string, string> = Object.create(null);
   const idx = url.indexOf("?");
-  if (idx === -1) return params;
-  for (const [k, v] of new URLSearchParams(url.substring(idx + 1))) {
-    if (!k || RESERVED_KEYS.has(k)) continue;
-    params[k] = v;
-  }
-  return params;
+  const pairs = idx === -1 ? [] : [...new URLSearchParams(url.substring(idx + 1))];
+  // fromEntries defines own data properties (a later duplicate key wins, as
+  // before) instead of assigning through a computed key.
+  const params = Object.fromEntries(pairs.filter(([k]) => k && !RESERVED_KEYS.has(k)));
+  return Object.setPrototypeOf(params, null) as Record<string, string>;
 }
