@@ -54,3 +54,25 @@ export class ReindexSourceMissingError extends Error {
     this.reason = reason;
   }
 }
+
+/**
+ * Thrown BEFORE any mutation when the DB being rebuilt is not the DB of the
+ * workspace being scanned. With NOX_DB_PATH set and OPENCLAW_WORKSPACE unset,
+ * reindex scanned the default /root/.openclaw/workspace and treated every
+ * chunk of the NOX_DB_PATH database that did not come from there as an orphan.
+ * (With both set and disagreeing, op-audit already aborts — incident 2026-05-25.)
+ */
+export class ReindexWorkspaceMismatchError extends Error {
+  readonly dbPath: string;
+  readonly workspaceDbPath: string;
+  constructor(dbPath: string, workspaceDbPath: string) {
+    super(
+      `[reindex] REFUSED before touching the DB: NOX_DB_PATH=${dbPath} is not the database of the workspace ` +
+        `reindex would scan (OPENCLAW_WORKSPACE unset ⇒ default workspace, whose DB is ${workspaceDbPath}). ` +
+        `Set OPENCLAW_WORKSPACE to the workspace that owns this DB, or unset NOX_DB_PATH.`,
+    );
+    this.name = "ReindexWorkspaceMismatchError";
+    this.dbPath = dbPath;
+    this.workspaceDbPath = workspaceDbPath;
+  }
+}

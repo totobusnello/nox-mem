@@ -51,11 +51,13 @@ crontab -l 2>/dev/null | grep -q "nox-mem consolidate" && pass "cron de consolid
 # `reindex` também não tem `--dry-run`: a primeira perna sempre falhava e a
 # segunda rodava o reindex de verdade.
 
-# 9. Teste de ingest (cria nota temporária e ingere)
-TEST_NOTE="${TMPDIR:-/tmp}/nox-mem-test-$$.md"
-echo "# Teste Forge\nDecisão de teste: ingest funcionando em $(date)" > "$TEST_NOTE"
-nox-mem ingest "$TEST_NOTE" &>/dev/null && pass "ingest: nota de teste ingerida" || fail "ingest: falhou"
-rm -f "$TEST_NOTE"
+# 9. Teste de ingest — num banco TEMPORÁRIO: o smoke test não deixa nota de
+# teste na memória real de quem instala.
+TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nox-mem-test-XXXXXX")"
+TEST_NOTE="$TEST_DIR/nota-de-teste.md"
+printf '# Teste\nDecisão de teste: ingest funcionando em %s\n' "$(date)" > "$TEST_NOTE"
+NOX_DB_PATH="$TEST_DIR/test.db" nox-mem ingest "$TEST_NOTE" &>/dev/null && pass "ingest: nota de teste ingerida (banco temporário)" || fail "ingest: falhou"
+rm -rf "$TEST_DIR"
 
 # 10. Ollama — modelo de embedding acessível
 curl -sf http://localhost:11434/api/tags &>/dev/null && pass "Ollama acessível" || warn "Ollama não acessível (servidor offline?)"

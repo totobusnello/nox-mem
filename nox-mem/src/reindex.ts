@@ -40,9 +40,9 @@ import { routeIngest } from "./lib/ingest-router.js";
 import { existsSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { join, resolve } from "path";
-import { ReindexWipeDetectedError, ReindexSourceMissingError, MIN_RETENTION_RATIO } from "./reindex-errors.js";
+import { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError, MIN_RETENTION_RATIO } from "./reindex-errors.js";
 
-export { ReindexWipeDetectedError, ReindexSourceMissingError } from "./reindex-errors.js";
+export { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError } from "./reindex-errors.js";
 
 const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
 
@@ -87,6 +87,15 @@ function collectReindexFiles(): { memoryFiles: string[]; sharedFiles: string[] }
  * passes untouched. Overridable with NOX_REINDEX_ALLOW_WIPE=1.
  */
 export function assertReindexSource(preCount: number): void {
+  // The DB must belong to the workspace being scanned. Only reachable with
+  // NOX_DB_PATH set and OPENCLAW_WORKSPACE unset (both set and disagreeing is
+  // already refused by op-audit). NOX_DB_PATH pointing at the default
+  // workspace's own DB — how origin crons call it — passes.
+  if (process.env.NOX_DB_PATH && !process.env.OPENCLAW_WORKSPACE) {
+    const dbPath = resolve(process.env.NOX_DB_PATH);
+    const workspaceDbPath = resolve(WORKSPACE, "tools", "nox-mem", "nox-mem.db");
+    if (dbPath !== workspaceDbPath) throw new ReindexWorkspaceMismatchError(dbPath, workspaceDbPath);
+  }
   if (ALLOW_WIPE) return;
   const roots = reindexRoots();
   const existing = roots.filter((r) => existsSync(r));

@@ -126,7 +126,7 @@ program
       if (!opts.dryRun) console.log(`[INFO] Reindexed ${result.files} files, ${result.chunks} chunks`);
     } catch (err) {
       const name = (err as Error).name;
-      if (name === "ReindexSourceMissingError" || name === "ReindexWipeDetectedError") {
+      if (name === "ReindexSourceMissingError" || name === "ReindexWipeDetectedError" || name === "ReindexWorkspaceMismatchError") {
         console.error((err as Error).message);
         process.exitCode = 1;
         return;
