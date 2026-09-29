@@ -421,16 +421,26 @@ async function handleRequest(req: { id: number | string; method: string; params?
 
 const rl = createInterface({ input: process.stdin });
 
+// In-flight requests. stdin closing (e.g. `printf '...' | nox-mem-mcp`) must not
+// cut off async tools (answer, search, reflect) before they respond.
+const pending = new Set<Promise<void>>();
+
 rl.on("line", (line) => {
+  let req;
   try {
-    const req = JSON.parse(line);
-    handleRequest(req);
+    req = JSON.parse(line);
   } catch {
     sendError(null, -32700, "Parse error");
+    return;
   }
+  const p: Promise<void> = handleRequest(req)
+    .catch((err) => sendError(req?.id ?? null, -32603, (err as Error).message))
+    .finally(() => pending.delete(p));
+  pending.add(p);
 });
 
-rl.on("close", () => {
+rl.on("close", async () => {
+  await Promise.allSettled([...pending]);
   closeDb();
   process.exit(0);
 });
