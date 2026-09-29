@@ -27,7 +27,8 @@ test("a malformed escape does not throw", () => {
 test("keys cannot reach Object.prototype", () => {
   const p = parseQuery("/api/search?__proto__=x&hasOwnProperty=y&constructor=z&q=ok");
   assert.equal(Object.getPrototypeOf(p), null);
-  assert.equal(p.__proto__, "x");
+  assert.equal(Object.hasOwn(p, "__proto__"), false);
+  assert.equal(Object.hasOwn(p, "constructor"), false);
   assert.equal(p.hasOwnProperty, "y");
   assert.equal(p.q, "ok");
   assert.equal(({} as Record<string, unknown>).polluted, undefined);
