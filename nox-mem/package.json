@@ -1,6 +1,6 @@
 {
   "name": "nox-mem",
-  "version": "3.5.0",
+  "version": "3.5.1",
   "description": "Pain-weighted hybrid memory engine: FTS5 + semantic search + knowledge graph, self-hosted on any Linux VPS.",
   "type": "module",
   "license": "MIT",
