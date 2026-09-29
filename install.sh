@@ -17,7 +17,7 @@
 # What this does:
 #   1. Checks Node.js >= 20 (and a C toolchain + python3, which better-sqlite3
 #      needs when it has to compile)
-#   2. npm install -g nox-mem            (NOX_MEM_VERSION=3.5.0 to pin a version)
+#   2. npm install -g nox-mem            (NOX_MEM_VERSION=3.5.1 to pin a version)
 #   3. Creates ~/.nox-mem and writes an .env template there if none exists
 #
 # Root is needed ONLY for: installing missing build tools, a global npm prefix
