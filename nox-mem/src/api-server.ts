@@ -18,6 +18,7 @@ import { getVaultFacts } from "./lib/spo-injection.js";
 import { execFileSync } from "child_process";
 import { applyCorsHeaders, handlePreflight } from "./api/cors.js";
 import { safeErrorMessage } from "./lib/api/safe-error-message.js";
+import { parseQuery } from "./lib/query-params.js";
 import { registerWireUpRoutes } from "./api/wire-up.js";
 import { handleBrief } from "./api/brief.js";
 import { parseTemporalFilter, TemporalParseError, type TemporalFilter } from "./lib/dates.js";
@@ -40,17 +41,6 @@ function json(res: ServerResponse, data: unknown, status = 200) {
     "Content-Type": "application/json",
   });
   res.end(JSON.stringify(data));
-}
-
-function parseQuery(url: string): Record<string, string> {
-  const idx = url.indexOf("?");
-  if (idx === -1) return {};
-  const params: Record<string, string> = {};
-  for (const part of url.substring(idx + 1).split("&")) {
-    const [k, v] = part.split("=");
-    if (k) params[decodeURIComponent(k)] = decodeURIComponent(v || "");
-  }
-  return params;
 }
 
 function readBody(req: IncomingMessage, limit = 65536): Promise<string> {
