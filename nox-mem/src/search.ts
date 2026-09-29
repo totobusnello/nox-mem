@@ -408,8 +408,8 @@ function recordAccess(
 // that; without a key it does not. When — and only when — the AND query returns
 // zero rows, search() retries with an OR of the content terms.
 //
-// Gate NOX_FTS_OR_FALLBACK: "on" always, "off" never, unset/"auto" only when no
-// embedding key is in the environment (production has one ⇒ unchanged there).
+// Gate NOX_FTS_OR_FALLBACK: "on" always, "off" never, unset/"auto" only when the
+// RESOLVED embedding provider has no key (production has one ⇒ unchanged there).
 // Read at call time, never frozen at import, so it stays testable in-process.
 
 const FTS_STOPWORDS: ReadonlySet<string> = new Set([
@@ -427,8 +427,29 @@ export function ftsOrFallbackEnabled(env: NodeJS.ProcessEnv = process.env): bool
   const mode = (env.NOX_FTS_OR_FALLBACK ?? "auto").trim().toLowerCase();
   if (mode === "on") return true;
   if (mode === "off") return false;
-  // Same key names the embedding provider resolves (src/providers/index.ts).
-  return !env.NOX_EMBEDDING_API_KEY && !env.NOX_EMBED_API_KEY && !env.GEMINI_API_KEY && !env.OPENAI_API_KEY;
+  return !hasResolvedEmbeddingKey(env);
+}
+
+/**
+ * True when the embedding provider that selectEmbeddingProvider() would resolve
+ * (NOX_EMBEDDING_PROVIDER, alias NOX_EMBED_PROVIDER, default "gemini") has the
+ * key it needs. Only THAT provider's key counts: a stray OPENAI_API_KEY in the
+ * shell of someone on the default gemini provider must not switch the fallback
+ * off, because search would then have neither embeddings nor OR. "voyage" is a
+ * stub that cannot embed and unknown names throw, so neither has a usable key.
+ * Key names mirror src/providers/index.ts.
+ */
+function hasResolvedEmbeddingKey(env: NodeJS.ProcessEnv): boolean {
+  const provider = (env.NOX_EMBEDDING_PROVIDER || env.NOX_EMBED_PROVIDER || "gemini").trim().toLowerCase();
+  const generic = env.NOX_EMBEDDING_API_KEY || env.NOX_EMBED_API_KEY;
+  switch (provider) {
+    case "gemini":
+      return Boolean(generic || env.GEMINI_API_KEY);
+    case "openai":
+      return Boolean(generic || env.OPENAI_API_KEY);
+    default:
+      return false;
+  }
 }
 
 /** OR expression of the non-stopword terms, each double-quoted; null if none is left. */

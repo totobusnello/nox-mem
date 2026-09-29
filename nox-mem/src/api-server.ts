@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * nox-mem API Server — lightweight HTTP API for dashboard consumption
- * Port 18800, CORS enabled, JSON responses
+ * Port 18802 (override: NOX_API_PORT), CORS enabled, JSON responses
  */
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { getDb, closeDb } from "./db.js";
@@ -22,13 +22,14 @@ import { registerWireUpRoutes } from "./api/wire-up.js";
 import { handleBrief } from "./api/brief.js";
 import { parseTemporalFilter, TemporalParseError, type TemporalFilter } from "./lib/dates.js";
 import { handleIngestEvent } from "./api/ingest-event.js";
+import { resolveApiPort } from "./lib/api-port.js";
 import {
   handleObsHealth,
   handleObsRecentOps,
   handleObsCanaryTail,
 } from "./observability.js";
 
-const PORT = parseInt(process.env.NOX_API_PORT || "18800");
+const PORT = resolveApiPort();
 // Security 2026-04-23: bind to loopback by default (was 0.0.0.0).
 // retentionDistribution + chunks/types fields are info-leak if exposed publicly
 // in case UFW drops. Override via NOX_API_HOST=0.0.0.0 only if behind VPN/reverse proxy.

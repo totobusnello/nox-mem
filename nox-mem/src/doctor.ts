@@ -16,8 +16,8 @@ const WATCHER_UNITS = ["nox-mem-watcher.service", "nox-mem-watch.service"];
 /**
  * Two groups, deliberately:
  *   core     — the store, FTS5 and embeddings. A ❌ here means ingest/search is broken.
- *   optional — integrations only some commands use (Ollama for consolidate /
- *              kg-extract, Notion, the systemd watcher). Absent ⇒ ⚪, never ❌:
+ *   optional — integrations only some commands use (Ollama as `digest`'s
+ *              last-resort fallback, Notion, the systemd watcher). Absent ⇒ ⚪, never ❌:
  *              a fresh install without them is healthy.
  *
  * `--quiet` prints only core problems and exits 1 iff a core check failed —
@@ -80,7 +80,8 @@ export async function doctor(opts: { quiet?: boolean } = {}): Promise<void> {
 
   // ── Optional integrations ──────────────────────────────────────────────────
 
-  // Ollama — used by consolidate / kg-extract only
+  // Ollama — only the last-resort fallback of `digest` (consolidate and
+  // kg-extract use Gemini/Groq/Claude and never call it)
   try {
     const response = await fetch("http://127.0.0.1:11434/api/tags", { signal: AbortSignal.timeout(5000) });
     if (response.ok) {
@@ -91,7 +92,7 @@ export async function doctor(opts: { quiet?: boolean } = {}): Promise<void> {
       optional.push({ name: "Ollama", status: "⚠️", detail: `HTTP ${response.status}` });
     }
   } catch {
-    optional.push({ name: "Ollama", status: "⚪", detail: "not running (optional — used by consolidate and kg-extract)" });
+    optional.push({ name: "Ollama", status: "⚪", detail: "not running (optional — only `digest` falls back to it; consolidate uses Gemini, then Groq, then Claude)" });
   }
 
   // Notion token

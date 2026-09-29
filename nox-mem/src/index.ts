@@ -84,10 +84,10 @@ program
   });
 
 program
-  .command("ingest <file>")
-  .description("Index a specific .md or .json file")
-  .option("--allow-prod", "Skip large-DB ingest guard (required for prod ops, see CLAUDE.md §6)")
-  .action(async (file: string, opts: { allowProd?: boolean }) => {
+  .command("ingest <files...>")
+  .description("Index one or more .md or .json files (a directory is an error: pass files, e.g. dir/*.md)")
+  .option("--allow-prod", "Skip the large-DB ingest guard (needed once the DB has more than 10,000 chunks; same as NOX_ALLOW_PROD_INGEST=1)")
+  .action(async (files: string[], opts: { allowProd?: boolean }) => {
     // Large-DB guard (postmortem 2026-05-19): abort if DB looks like prod
     // and operator hasn't explicitly opted in. Override via --allow-prod flag
     // or NOX_ALLOW_PROD_INGEST=1 env var.
@@ -96,9 +96,14 @@ program
     }
     checkLargeDbIngestGuard(getDb(), "ingest");
     const { routeIngest } = await import("./lib/ingest-router.js");
-    const result = await routeIngest(file);
-    console.log(`[INFO] Ingested ${file}: ${result.chunks} chunks (kind=${result.kind}, via=${result.routedTo})`);
+    const { ingestMany } = await import("./lib/ingest-many.js");
+    const { failed } = await ingestMany(files, {
+      ingestOne: (f) => routeIngest(f),
+      log: (l) => console.log(l),
+      error: (l) => console.error(l),
+    });
     closeDb();
+    if (failed > 0) process.exitCode = 1;
   });
 
 program
@@ -155,7 +160,7 @@ program
 
 program
   .command("consolidate")
-  .description("Consolidate daily notes into topic files (requires Ollama)")
+  .description("Consolidate daily notes into topic files (LLM: Gemini, then Groq, then Claude — needs GEMINI_API_KEY, GROQ_API_KEY or ANTHROPIC_API_KEY)")
   .action(async () => {
     const { consolidate } = await import("./consolidate.js");
     const result = await consolidate();
@@ -185,7 +190,7 @@ program
 
 program
   .command("doctor")
-  .description("Diagnostic check — core (SQLite, FTS5, embeddings) + optional integrations (Ollama, Notion, watcher)")
+  .description("Diagnostic check — core (SQLite, FTS5, embeddings) + optional integrations (Ollama for digest, Notion, watcher)")
   .option("--quiet", "Print only core problems; exit 1 if a core check fails")
   .action(async (opts: { quiet?: boolean }) => {
     const { doctor } = await import("./doctor.js");
@@ -422,7 +427,7 @@ program
 
 program
   .command("kg-extract")
-  .description("Extract entities/relations from chunks using LLM (Ollama)")
+  .description("Extract entities/relations from chunks using Gemini (needs GEMINI_API_KEY)")
   .option("-n, --limit <n>", "Chunks to process", "50")
   .action(async (opts: { limit: string }) => {
     const { extractWithLLM } = await import("./kg-llm.js");
