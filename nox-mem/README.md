@@ -235,6 +235,7 @@ nox-mem search "query"     — hybrid search (FTS5 + semantic + RRF)
 nox-mem search "q" --as-of 2026-05-01        — time-travel: chunks that existed then
 nox-mem search "q" --changed-since 7d        — recency window (15m, 2h, 7d, 1w or ISO)
 NOX_FTS_OR_FALLBACK=auto|on|off — FTS5 OR retry (stopwords dropped) when the AND query finds nothing; auto (default) = only when the key of the resolved embedding provider (NOX_EMBEDDING_PROVIDER, default gemini) is missing, so natural-language questions work on keyless installs and keyed setups are unchanged. An unrelated key such as OPENAI_API_KEY under the default gemini provider does not turn it off
+NOX_QUERY_EMBED_TIMEOUT_MS=5000 — time budget for embedding a search/reflect query (retries included). When the provider is slower than this, search falls back to FTS5 instead of waiting. 0 disables the budget. Ingest and vectorize are not affected
 nox-mem answer "question"  — grounded answer with citations (needs GEMINI_API_KEY); --as-of / --changed-since filter the evidence
 nox-mem ingest <files...>  — ingest one or more markdown/json files; a directory is an error naming it, the other files still run, exit 1 if any failed
 nox-mem watch              — auto-ingest changes; set NOX_WATCH_DIRS=/abs/dir[,/abs/dir2] (see Environment variables)
