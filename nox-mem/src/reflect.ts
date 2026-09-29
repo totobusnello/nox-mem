@@ -9,7 +9,7 @@ import { getDb } from "./db.js";
 import { search, searchHybrid, type SearchResult } from "./search.js";
 import { queryEntity, listDecisions, type GraphNode, type GraphEdge } from "./knowledge-graph.js";
 import { findPath } from "./cross-agent-v2.js";
-import { embedText } from "./embed.js";
+import { embedText, queryEmbedTimeoutMs } from "./embed.js";
 import { selectLLMProviderWithFallback, MissingKeyError } from "./providers/index.js";
 
 const MAX_EVIDENCE_CHARS = 2000;
@@ -253,7 +253,7 @@ export async function reflect(
         "SELECT COUNT(*) AS c FROM reflect_cache WHERE query_embedding IS NOT NULL AND datetime(created_at, '+' || ttl_hours || ' hours') > datetime('now')"
       ).get() as { c: number }).c;
       if (haveEmbeds > 0) try {
-        const queryEmbed = await embedText(question);
+        const queryEmbed = await embedText(question, { timeoutMs: queryEmbedTimeoutMs() });
         // LIMIT 500 ORDER BY most recent — bounds scan; semantic_hit_count desc keeps hot entries
         const candidates = db.prepare(
           `SELECT query_hash, query, response, evidence_sources, query_embedding

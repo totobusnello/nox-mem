@@ -111,10 +111,11 @@ async function geminiEmbed(text: string): Promise<number[]> {
   return data.embedding.values;
 }
 
-async function geminiEmbedQuery(text: string): Promise<number[]> {
+async function geminiEmbedQuery(text: string, signal?: AbortSignal): Promise<number[]> {
   if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
   const url = `${API_BASE}/models/${EMBEDDING_MODEL}:embedContent?key=${GEMINI_API_KEY}`;
   const resp = await fetchWithRetry(url, {
+    signal,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -174,14 +175,61 @@ export function activeEmbeddingDim(): number {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export async function embedText(text: string): Promise<Float32Array> {
+export async function embedText(text: string, opts: { timeoutMs?: number } = {}): Promise<Float32Array> {
+  const timeoutMs = opts.timeoutMs ?? 0;
+  if (!(timeoutMs > 0)) return embedTextUnbounded(text);
+  // A slow provider is not an error: without a budget the caller just waits
+  // (retries + backoff included). The budget covers the whole call; on expiry the
+  // in-flight native request is aborted and the caller gets EmbedTimeoutError.
+  const ctrl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      ctrl.abort();
+      reject(new EmbedTimeoutError(timeoutMs));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([embedTextUnbounded(text, ctrl.signal), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export class EmbedTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`query embedding exceeded ${timeoutMs} ms`);
+    this.name = "EmbedTimeoutError";
+  }
+}
+
+/**
+ * Time budget for embedding a search query, in ms. NOX_QUERY_EMBED_TIMEOUT_MS
+ * overrides; 0 disables the budget. Default 5000: hybrid p50 is ~1 s, so a
+ * query still waiting after 5 s is better served by FTS5 than by waiting.
+ */
+export function queryEmbedTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.NOX_QUERY_EMBED_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return 5000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 5000;
+}
+
+/** Test seam: replaces the provider call behind embedText (null restores it). */
+let embedOverride: ((text: string, signal?: AbortSignal) => Promise<Float32Array>) | null = null;
+export function __setEmbedForTests(fn: typeof embedOverride): void {
+  embedOverride = fn;
+}
+
+async function embedTextUnbounded(text: string, signal?: AbortSignal): Promise<Float32Array> {
+  if (embedOverride) return embedOverride(text, signal);
   // Route to abstract provider when configured; keep native Gemini path as default.
   const provider = activeEmbeddingProvider();
   if (provider !== null) {
     const vecs = await provider.embed([text]);
     return vecs[0];
   }
-  const values = await geminiEmbedQuery(text);
+  const values = await geminiEmbedQuery(text, signal);
   return new Float32Array(values);
 }
 

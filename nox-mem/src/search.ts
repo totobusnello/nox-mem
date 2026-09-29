@@ -587,7 +587,7 @@ export async function searchSemantic(
 ): Promise<SearchResult[]> {
   const temporal = buildTemporalClause(filter);
   try {
-    const { embedText, semanticSearch, ensureVecTable, countEmbedded } = await import("./embed.js");
+    const { embedText, semanticSearch, ensureVecTable, countEmbedded, queryEmbedTimeoutMs } = await import("./embed.js");
     const db = getDb();
     ensureVecTable(db);
 
@@ -601,7 +601,8 @@ export async function searchSemantic(
     // G10d: compute entity count once per query (shared cache with FTS path).
     const { count: queryEntityCount } = countQueryEntities(query, db);
 
-    const queryEmbedding = await embedText(query);
+    // Bounded: a slow provider falls back to FTS5 through the catch below.
+    const queryEmbedding = await embedText(query, { timeoutMs: queryEmbedTimeoutMs() });
     // vec0 KNN cannot take a WHERE on chunk columns, so the temporal filter is
     // applied to the KNN candidates. Over-fetch when filtering, otherwise a
     // narrow window would leave the top-k almost empty.
