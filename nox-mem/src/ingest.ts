@@ -181,7 +181,7 @@ export async function ingestFile(filePath: string, externalDb?: Database.Databas
   // by a batch vectorize phase; embedding per file there is too expensive.
   if (!externalDb && process.env.GEMINI_API_KEY) {
     try {
-      const { embedText, ensureVecTable, upsertEmbedding } = await import("./embed.js");
+      const { embedDocument, ensureVecTable, upsertEmbedding } = await import("./embed.js");
       const db = getDb();
       ensureVecTable(db);
       const newChunks = db.prepare(
@@ -191,7 +191,7 @@ export async function ingestFile(filePath: string, externalDb?: Database.Databas
       let embedded = 0;
       for (const chunk of newChunks) {
         try {
-          const emb = await embedText(chunk.chunk_text);
+          const emb = await embedDocument(chunk.chunk_text);
           if (emb && emb.length > 0) {
             upsertEmbedding(db, chunk.id, emb);
             embedded++;
