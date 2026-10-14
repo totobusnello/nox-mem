@@ -219,6 +219,24 @@ export function detectTemporal(query: string, nowMs: number = Date.now()): Tempo
   return { isTemporal: false, anchor: null, anchorRange: null, signalSource: null };
 }
 
+/**
+ * Value of `search_telemetry.was_temporal_query` (schema v20).
+ *
+ *   0 — no temporal expression
+ *   1 — temporal word only, no date ("when", "last", "deploy") → no anchor
+ *   2 — a date in the query (ISO, month, year) → the only class a proximity
+ *       rerank could use
+ *
+ * Measures how often real searches carry a temporal expression, which is what
+ * would justify reopening the implicit temporal rerank. Runs on every search
+ * regardless of NOX_TEMPORAL_PATH: regex over the query, results untouched.
+ */
+export function temporalQueryKind(query: string): 0 | 1 | 2 {
+  const { isTemporal, signalSource } = detectTemporal(query);
+  if (!isTemporal) return 0;
+  return signalSource === "adverbial" ? 1 : 2;
+}
+
 // ─── Proximity delta ──────────────────────────────────────────────────────────
 //
 // Gaussiana truncada: bump máximo de +0.5 em Δdays=0, decai exponencialmente.

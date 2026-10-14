@@ -4,7 +4,7 @@ import { TIER_BOOST } from "./tier-manager.js";
 import { expandQuery } from "./search-expansion.js";
 import { dedupe } from "./search-dedup.js";
 import { calculateSalience, calculateSalienceLegacy, getSalienceMode } from "./salience.js";
-import { rerankByTemporalProximity, logTemporalProbe } from "./temporal-retrieval.js";
+import { rerankByTemporalProximity, logTemporalProbe, temporalQueryKind } from "./temporal-retrieval.js";
 import { countQueryEntities } from "./query-entity-count.js";
 import { buildTemporalClause, type TemporalFilter } from "./lib/dates.js";
 
@@ -709,6 +709,29 @@ function rrfScore(rank: number, k = 60): number {
   return 1 / (k + rank + 1);
 }
 
+/**
+ * Who searched, for `search_telemetry.requesting_agent` (schema v20).
+ *
+ * Format `<surface>:<agent>`: `http:nox`, `mcp:unknown`, `cli:unknown`. A search
+ * with `trackAccess=false` (the marker health probes and canaries already use)
+ * becomes `probe:<agent>`. Never NULL: NULL is indistinguishable from "column
+ * without a writer". The agent name can come from an HTTP header, so only
+ * `[a-z0-9_.-]{1,40}` passes; anything else becomes `invalid`.
+ *
+ * The agent comes from the `X-Agent-Name` header (HTTP) or `NOX_AGENT_NAME`
+ * (every surface).
+ */
+export type SearchCaller = { surface?: string; agent?: string | null };
+export function telemetryCaller(caller: SearchCaller, trackAccess: boolean): string {
+  const clean = (v: string | null | undefined, fallback: string): string => {
+    const t = (v ?? "").trim().toLowerCase();
+    if (!t) return fallback;
+    return /^[a-z0-9_.-]{1,40}$/.test(t) ? t : "invalid";
+  };
+  const agent = clean(caller.agent, "unknown");
+  return `${trackAccess ? clean(caller.surface, "unknown") : "probe"}:${agent}`;
+}
+
 function logTelemetry(
   query: string,
   variantsCount: number,
@@ -717,6 +740,8 @@ function logTelemetry(
   latencyMs: number,
   skipReason?: string,
   top?: SearchResult[],
+  /** Already normalised by `telemetryCaller`. */
+  requestingAgent?: string,
 ): void {
   try {
     const db = getDb();
@@ -728,10 +753,12 @@ function logTelemetry(
     const comId = (top ?? []).filter((r) => typeof r.id === "number");
     const ids = comId.length ? JSON.stringify(comId.map((r) => r.id)) : null;
     const scores = comId.length ? JSON.stringify(comId.map((r) => r.score)) : null;
+    const agent = requestingAgent ?? telemetryCaller({}, true);
+    const temporal = temporalQueryKind(query);
     db.prepare(
-      `INSERT INTO search_telemetry (query_hash, query_words, variants_count, results_count, has_semantic, latency_ms, expansion_skipped_reason, top_chunk_ids, top_scores)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(hash, words, variantsCount, resultsCount, hasSemantic ? 1 : 0, latencyMs, skipReason || null, ids, scores);
+      `INSERT INTO search_telemetry (query_hash, query_words, variants_count, results_count, has_semantic, latency_ms, expansion_skipped_reason, top_chunk_ids, top_scores, requesting_agent, was_temporal_query)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(hash, words, variantsCount, resultsCount, hasSemantic ? 1 : 0, latencyMs, skipReason || null, ids, scores, agent, temporal);
   } catch {
     // telemetria nunca derruba a search
   }
@@ -742,6 +769,7 @@ export async function searchHybrid(
   limit: number = 5,
   trackAccess: boolean = true,
   filter?: TemporalFilter,
+  caller: SearchCaller = {},
 ): Promise<SearchResult[]> {
   const t0 = Date.now();
   const perVariantLimit = limit * 2;
@@ -805,7 +833,7 @@ export async function searchHybrid(
   const final = dedupe(preDedup, limit);
 
   const hasSemantic = final.some((r) => r.match_type === "semantic" || r.match_type === "hybrid");
-  logTelemetry(query, variants.length, final.length, hasSemantic, Date.now() - t0, expansion.reason, final);
+  logTelemetry(query, variants.length, final.length, hasSemantic, Date.now() - t0, expansion.reason, final, telemetryCaller(caller, trackAccess));
 
   // D49 Phase 1 — temporal proximity rerank, shadow-mode opt-in.
   // Only activates if NOX_TEMPORAL_PATH=shadow|active. In shadow mode the

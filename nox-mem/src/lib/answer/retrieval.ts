@@ -50,7 +50,7 @@ async function defaultRawSearch(
   filter?: TemporalFilter
 ): Promise<RawChunk[]> {
   // trackAccess stays at its default (true), exactly as before the filter existed.
-  const hits = await searchHybrid(question, topK, true, filter);
+  const hits = await searchHybrid(question, topK, true, filter, { surface: "answer", agent: process.env.NOX_AGENT_NAME });
   return hits.map((h) => ({
     chunk_id: h.id ?? 0,
     file_path: h.source_file,

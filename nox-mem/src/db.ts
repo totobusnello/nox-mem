@@ -28,7 +28,7 @@ export const DB_PATH = _resolvedDb.path;
 // Backups live next to the DB. For the legacy package path this is the same
 // directory as before (<package root>/backups); it only moves for new installs.
 export const BACKUP_DIR = _ws ? resolve(_ws, "tools", "nox-mem", "backups") : resolve(dirname(DB_PATH), "backups");
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 20;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Large-DB ingest guard (postmortem 2026-05-19)
@@ -207,10 +207,30 @@ function ensureSchema(db: Database.Database): void {
   if (currentVersion < 7) migrateToV7(db);
   if (currentVersion < 18) migrateToV8(db);
   if (currentVersion < 19) migrateToV9(db);
+  if (currentVersion < 20) migrateToV20(db);
 
   db.prepare("INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES ('schema_version', ?, datetime('now'))").run(String(SCHEMA_VERSION));
   // Keep PRAGMA user_version in sync so op-audit and tests can rely on it.
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
+function migrateToV20(db: Database.Database): void {
+  // v20 — who searched, and whether the query carried a temporal expression.
+  //
+  // `requesting_agent` is `<surface>:<agent>` (`http:nox`, `mcp:unknown`,
+  // `probe:semantic-canary`), never NULL from the writer, so NULL keeps meaning
+  // "row written before v20". Without it a probe and an agent look the same: in
+  // the canonical engine's telemetry 62.8% of searches were probes.
+  //
+  // `was_temporal_query` is 0 (none), 1 (temporal word, no date) or 2 (date in
+  // the query). It measures the reopening trigger of the implicit temporal
+  // rerank, which stays off. DEFAULT 0 matches the canonical engine's column;
+  // rows before v20 read 0 without having been measured, so analyses start at
+  // the upgrade, not at the first row.
+  //
+  // Per-column try/catch keeps this idempotent on DBs patched out of band.
+  try { db.exec(`ALTER TABLE search_telemetry ADD COLUMN requesting_agent TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE search_telemetry ADD COLUMN was_temporal_query INTEGER DEFAULT 0`); } catch {}
 }
 
 function migrateToV9(db: Database.Database): void {

@@ -44,7 +44,7 @@ program
       return;
     }
     if (opts.hybrid) {
-      const results = await searchHybrid(query, parseInt(opts.limit, 10), true, filter);
+      const results = await searchHybrid(query, parseInt(opts.limit, 10), true, filter, { surface: "cli", agent: process.env.NOX_AGENT_NAME });
       console.log(formatResults(results));
     } else {
       console.log(formatResults(search(query, parseInt(opts.limit, 10), true, filter)));

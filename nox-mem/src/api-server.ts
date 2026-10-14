@@ -395,7 +395,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         // E12 (2026-05-04): propagate requesting agent from header
         const agentHeader = req.headers["x-agent-name"];
         const requestingAgent = (Array.isArray(agentHeader) ? agentHeader[0] : agentHeader) ?? process.env.NOX_AGENT_NAME;
-        const results = await searchHybrid(qText, limit, trackAccess, temporalFilter);
+        const results = await searchHybrid(qText, limit, trackAccess, temporalFilter, { surface: "http", agent: requestingAgent });
         // E03a (2026-05-02): SPO injection envelope. Mode shadow → compute+log only.
         // Mode active → surface vaultFacts in response. Mode off → no compute.
         const vf = getVaultFacts(qText, getDb());
