@@ -36,10 +36,11 @@
 
 import { getDb } from "./db.js";
 import { withOpAudit } from "./lib/op-audit.js";
-import { routeIngest } from "./lib/ingest-router.js";
+import { routeIngestSync } from "./lib/ingest-router.js";
+import { ensureTombstoneTable, tombstoneFile } from "./lib/tombstone.js";
 import { existsSync, readdirSync } from "fs";
 import { createHash } from "crypto";
-import { join, resolve } from "path";
+import { join, relative, resolve } from "path";
 import { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError, MIN_RETENTION_RATIO } from "./reindex-errors.js";
 
 export { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError } from "./reindex-errors.js";
@@ -121,32 +122,37 @@ interface ReindexImplResult {
   chunks: number;
   preCount: number;
   postCount: number;
-  upserted: number;
+  /** rows whose content was unchanged: same id, same vector */
+  kept: number;
   inserted: number;
-  preserved: number;
-  orphaned: number;
+  /** rows removed because their file's content changed (edited away) */
+  deleted: number;
+  /** rows re-pointed from a tombstoned path (rename) */
+  adopted: number;
+  /** files with chunks that were no longer on disk — marked, not deleted */
+  tombstoned: number;
 }
 
 /**
- * Core reindex implementation — UPSERT-based, non-destructive.
+ * Core reindex — a per-file diff, in ONE transaction (2026-10-14, ROADMAP v6 item 3).
  *
- * Strategy:
- *   1. Snapshot existing (source_file, chunk_text) -> {id, tier, access_count, importance, last_accessed_at, section, retention_days, source_type, is_compiled, pain}
- *   2. Walk files, route via routeIngest into ISOLATED staging set (in-memory accumulator).
- *      NOTE: routeIngest currently writes directly to DB. We pre-mark new ingests with
- *      `__reindex_stage` chunk_type prefix and finalize via UPDATE.
- *      Until routeIngest supports a staging mode (follow-up PR), we use the safer pattern:
- *      preserve old chunks until ALL new ingests succeed, then UPSERT-merge.
- *   3. For each file processed by routeIngest, the NEW chunks have fresh ids. Match against
- *      old chunks via content fingerprint and copy access metadata over.
- *   4. After ALL files succeed: DELETE old chunks that did NOT survive the fingerprint match
- *      (i.e. content actually changed/removed). This is the SOLE destructive op, and only
- *      runs AFTER all ingests completed without throwing.
+ *   1. Files under the reindex roots that left the disk are TOMBSTONED, first —
+ *      so a file moved to a new path is adopted (ids kept) when step 2 reaches it.
+ *      Their chunks stay. Before, reindex DELETEd every chunk whose file it did
+ *      not walk, which included content kept on purpose (D-2026-09-30).
+ *   2. Every walked file goes through routeIngestSync → chunk-sync: unchanged
+ *      chunks keep their row, new text is inserted, edited-away text removed.
+ *      Duplicate rows of the same content (left by the pre-2026-09-28 reindex)
+ *      collapse to one, keeping the embedded copy.
+ *   3. Distinct content retained is checked BEFORE commit; a breach throws and
+ *      the whole transaction rolls back (withOpAudit keeps the snapshot anyway).
+ *
+ * Chunks of files outside the roots (agents/, sessions/, …) are not touched.
  */
 async function _reindexImpl(): Promise<ReindexImplResult> {
   const db = getDb();
 
-  // Defensive: load sqlite-vec BEFORE any chunk mutation (2026-05-21 fix preserved).
+  // Load sqlite-vec extension so the vec cascade trigger on chunks can run.
   // Dynamic import via Function() avoids TS2307 in the staged-dir build (no sqlite-vec
   // dep here — real module installed on VPS via package.json at deploy target).
   try {
@@ -160,233 +166,90 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
     );
   }
 
-  // ── Phase 1: snapshot pre-state ────────────────────────────────────────────
   const preCount = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
 
   // ── Phase 0 guard (read-only so far): the rebuild source must exist ────────
   // Measured 2026-09-28 on a clean npm install: no $OPENCLAW_WORKSPACE ⇒ the scan
-  // found 0 files ⇒ every chunk became an "orphan" and was deleted; the ratio
-  // guard below then threw — after the DELETE. Refuse here, before any write.
+  // found 0 files ⇒ every chunk became an "orphan" and was deleted. Refuse here.
   assertReindexSource(preCount);
 
-  interface OldChunk {
-    id: number;
-    source_file: string;
-    chunk_text: string;
-    tier: string | null;
-    access_count: number | null;
-    importance: number | null;
-    last_accessed_at: string | null;
-    section: string | null;
-    section_boost: number | null;
-    retention_days: number | null;
-    pain: number | null;
-    source_type: string | null;
-    is_compiled: number | null;
-  }
-
-  // Tolerant select: schema may lack some columns on older DBs (pre-v10).
-  // `SELECT *` would force coupling; instead probe column existence.
-  const cols = new Set(
-    (db.prepare("PRAGMA table_info(chunks)").all() as Array<{ name: string }>).map((r) => r.name),
-  );
-  const has = (c: string) => cols.has(c);
-  const selectCols = [
-    "id",
-    "source_file",
-    "chunk_text",
-    has("tier") ? "tier" : "NULL AS tier",
-    has("access_count") ? "access_count" : "NULL AS access_count",
-    has("importance") ? "importance" : "NULL AS importance",
-    has("last_accessed_at") ? "last_accessed_at" : "NULL AS last_accessed_at",
-    has("section") ? "section" : "NULL AS section",
-    has("section_boost") ? "section_boost" : "NULL AS section_boost",
-    has("retention_days") ? "retention_days" : "NULL AS retention_days",
-    has("pain") ? "pain" : "NULL AS pain",
-    has("source_type") ? "source_type" : "NULL AS source_type",
-    has("is_compiled") ? "is_compiled" : "NULL AS is_compiled",
-  ].join(", ");
-  const oldChunks = db.prepare(`SELECT ${selectCols} FROM chunks`).all() as OldChunk[];
-
-  // Build content fingerprint -> oldChunk index.
-  // One representative per content fingerprint. When the DB already holds
-  // duplicates (every reindex before 2026-09-28 doubled unchanged content), the
-  // kept representative is the one WITH an embedding, then the lowest id — the
-  // other copies become orphans and are removed, and dropping one without a
-  // vector must never cost the one that has it.
-  let embeddedIds = new Set<number>();
-  try {
-    embeddedIds = new Set(
-      (db.prepare("SELECT chunk_id FROM vec_chunk_map").all() as Array<{ chunk_id: number }>).map((r) => r.chunk_id),
-    );
-  } catch {
-    /* no vector map yet (fresh / keyless install) — every row is equal */
-  }
-  const better = (a: OldChunk, b: OldChunk): OldChunk => {
-    const ae = embeddedIds.has(a.id), be = embeddedIds.has(b.id);
-    if (ae !== be) return ae ? a : b;
-    return a.id <= b.id ? a : b;
-  };
-  const oldByFingerprint = new Map<string, OldChunk>();
-  for (const row of oldChunks) {
-    const fp = chunkFingerprint(row.source_file, row.chunk_text);
-    const cur = oldByFingerprint.get(fp);
-    oldByFingerprint.set(fp, cur ? better(cur, row) : row);
-  }
   // Retention is measured on DISTINCT content, not rows: removing a redundant
   // copy of content that is still present is not a loss. Measured on rows, a DB
-  // doubled by the old bug (2N → N) read as a 50% wipe and the cleanup reindex
-  // was refused forever.
-  const preDistinct = oldByFingerprint.size;
-
-  console.log(`[reindex] Phase 1: snapshotted ${oldChunks.length} existing chunks`);
-
-  // ── Phase 2: ingest new chunks into a staging set ──────────────────────────
-  // Strategy: do NOT delete first. Let routeIngest INSERT new chunks alongside old ones.
-  // After all files succeed, we merge: keep new chunks (overlap by fingerprint inherits old metadata),
-  // delete pure-old chunks (no matching fingerprint = content removed).
-  //
-  // To distinguish "old" vs "new" rows we capture max(id) before any ingest.
-  const maxIdBefore = (db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM chunks").get() as { m: number }).m;
+  // doubled by the old bug (2N → N) read as a 50% wipe.
+  const distinctContent = (): number =>
+    new Set(
+      (db.prepare("SELECT source_file, chunk_text FROM chunks").all() as Array<{ source_file: string; chunk_text: string }>)
+        .map((r) => chunkFingerprint(r.source_file, r.chunk_text)),
+    ).size;
+  const preDistinct = distinctContent();
+  console.log(`[reindex] Phase 1: ${preCount} chunks, ${preDistinct} distinct`);
 
   // Same scan as assertReindexSource — one definition of "the source".
   const { memoryFiles, sharedFiles } = collectReindexFiles();
   const allFiles = [...memoryFiles, ...sharedFiles];
-  let totalChunksIngested = 0;
+  const roots = reindexRoots().map((r) => relative(WORKSPACE, r) + "/");
   const fileErrors: Array<{ file: string; error: string }> = [];
+  const t = { chunks: 0, kept: 0, inserted: 0, deleted: 0, adopted: 0, tombstoned: 0 };
+  let retainedDistinct = preDistinct;
 
-  for (const file of allFiles) {
-    try {
-      // skipDelete=true: do NOT let routeIngest call its own DELETE FROM chunks WHERE source_file=?
-      // We handle merge globally after the loop.
-      const result = await routeIngest(file, { externalDb: db, skipDelete: true });
-      totalChunksIngested += result.chunks;
-      // Verbose log gated behind env to avoid blasting nightly cron output.
-      if (process.env.NOX_REINDEX_VERBOSE === "1") {
-        console.log(`[reindex] ${file}: ${result.chunks} chunks`);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      fileErrors.push({ file, error: msg });
-      console.error(`[reindex] ERROR ingesting ${file}: ${msg}`);
+  ensureTombstoneTable(db);
+  db.transaction(() => {
+    // ── Phase 2: tombstone what left the disk (before ingest, so renames adopt) ──
+    const sources = db.prepare("SELECT DISTINCT source_file FROM chunks").all() as Array<{ source_file: string }>;
+    for (const { source_file } of sources) {
+      if (!roots.some((r) => source_file.startsWith(r))) continue;
+      if (existsSync(resolve(WORKSPACE, source_file))) continue;
+      if (tombstoneFile(db, source_file, false, "missing-at-reindex").status === "tombstoned") t.tombstoned++;
     }
-  }
 
-  // ── Phase 3: identify new chunks (id > maxIdBefore) and merge with old metadata ──
-  interface NewChunk {
-    id: number;
-    source_file: string;
-    chunk_text: string;
-  }
-  const newChunks = db
-    .prepare("SELECT id, source_file, chunk_text FROM chunks WHERE id > ?")
-    .all(maxIdBefore) as NewChunk[];
-
-  // For each new chunk, look up by fingerprint: unchanged content keeps the old row.
-  const seenOldIds = new Set<number>();
-  let inheritedCount = 0;
-  // A new row whose fingerprint matches an old row is the SAME content: keep the
-  // old row (it already holds the embedding, a stable id and its metadata) and
-  // drop the fresh copy. Before 2026-09-28 both were kept, so every reindex left
-  // each unchanged chunk twice (measured: 10 chunks -> 20 after one reindex).
-  // Only the fresh copy (id > maxIdBefore) is ever deleted here — never old data.
-  const dropNewDuplicate = db.prepare("DELETE FROM chunks WHERE id = ? AND id > ?");
-  let newDuplicatesDropped = 0;
-  const mergeTxn = db.transaction(() => {
-    for (const nc of newChunks) {
-      const fp = chunkFingerprint(nc.source_file, nc.chunk_text);
-      const oldRow = oldByFingerprint.get(fp);
-      if (oldRow) {
-        if (seenOldIds.has(oldRow.id)) {
-          // Second new copy of the same content in this run: keep the first.
-          newDuplicatesDropped += dropNewDuplicate.run(nc.id, maxIdBefore).changes;
-          continue;
-        }
-        seenOldIds.add(oldRow.id);
-        newDuplicatesDropped += dropNewDuplicate.run(nc.id, maxIdBefore).changes;
-        inheritedCount++;
+    // ── Phase 3: per-file diff ──────────────────────────────────────────────
+    for (const file of allFiles) {
+      try {
+        const r = routeIngestSync(db, file);
+        t.chunks += r.chunks;
+        t.kept += r.kept ?? 0;
+        t.inserted += r.inserted?.length ?? 0;
+        t.deleted += r.deleted ?? 0;
+        t.adopted += r.adopted ?? 0;
+        if (process.env.NOX_REINDEX_VERBOSE === "1") console.log(`[reindex] ${file}: ${r.chunks} chunks`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        fileErrors.push({ file, error: msg });
+        console.error(`[reindex] ERROR ingesting ${file}: ${msg}`);
       }
     }
-  });
-  mergeTxn();
 
-  // ── Phase 4: delete pure-old chunks (no fingerprint match in new set) ──────
-  // This is the SOLE destructive op. Runs AFTER all ingests succeeded.
-  // If fileErrors is non-empty AND would cause a wipe, the Layer 4 invariant
-  // check below will throw and roll back.
-  const orphanIds = oldChunks.map((r) => r.id).filter((id) => !seenOldIds.has(id));
+    // ── Phase 4: core tier retention_days = NULL contract (preserved) ─────────
+    const cols = new Set((db.prepare("PRAGMA table_info(chunks)").all() as Array<{ name: string }>).map((r) => r.name));
+    if (cols.has("retention_days") && cols.has("tier")) {
+      db.exec("UPDATE chunks SET retention_days = NULL WHERE tier = 'core'");
+    }
 
-  // Layer 4, moved IN FRONT of the delete: project the post-count and refuse if
-  // it would breach the retention ratio. The post-delete check below stays as a
-  // second leg, but by then the rows are already gone (no auto-restore).
-  // Distinct content that will remain after the delete (kept old rows + new
-  // rows). An edited file replaces content — it is not a loss — so this counts
-  // what will be present, not which old fingerprints survived.
-  const orphanSet = new Set(orphanIds);
-  const projectedFps = new Set<string>();
-  for (const r of db.prepare("SELECT id, source_file, chunk_text FROM chunks").all() as Array<{ id: number; source_file: string; chunk_text: string }>) {
-    if (!orphanSet.has(r.id)) projectedFps.add(chunkFingerprint(r.source_file, r.chunk_text));
-  }
-  const projectedDistinct = projectedFps.size;
-  if (preDistinct > 0 && projectedDistinct / preDistinct < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
-    throw new ReindexWipeDetectedError(preDistinct, projectedDistinct, MIN_RETENTION_RATIO);
-  }
-
-  let orphanedDeleted = 0;
-  if (orphanIds.length > 0) {
-    const deleteOrphan = db.prepare("DELETE FROM chunks WHERE id = ?");
-    const deleteOrphansTxn = db.transaction(() => {
-      for (const id of orphanIds) {
-        const r = deleteOrphan.run(id);
-        if (r.changes > 0) orphanedDeleted++;
-      }
-    });
-    deleteOrphansTxn();
-  }
+    // ── Layer 4: invariant check, BEFORE commit ─────────────────────────────
+    // An edited file replaces content — it is not a loss — so this counts what
+    // is present now. A breach throws and rolls the whole reindex back.
+    retainedDistinct = distinctContent();
+    if (preDistinct > 0 && retainedDistinct / preDistinct < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
+      throw new ReindexWipeDetectedError(preDistinct, retainedDistinct, MIN_RETENTION_RATIO);
+    }
+  })();
 
   // Re-rebuild FTS index (cheap, idempotent — content= table optimization).
   db.exec("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')");
 
-  // ── Phase 5: core tier retention_days = NULL contract (preserved) ───────────
-  if (cols.has("retention_days") && cols.has("tier")) {
-    db.exec("UPDATE chunks SET retention_days = NULL WHERE tier = 'core'");
-  }
-
   const postCount = (db.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c;
-
-  // ── Layer 4: invariant check ────────────────────────────────────────────────
-  // Compute retention ratio. If we lost more than (1 - MIN_RETENTION_RATIO) of chunks,
-  // assume wipe-class failure and throw — withOpAudit failure path will preserve snapshot.
-  // Second leg, measured on the DB itself after the delete: distinct content present.
-  const retainedDistinct = new Set(
-    (db.prepare("SELECT source_file, chunk_text FROM chunks").all() as Array<{ source_file: string; chunk_text: string }>)
-      .map((r) => chunkFingerprint(r.source_file, r.chunk_text)),
-  ).size;
   const ratio = preDistinct === 0 ? 1 : retainedDistinct / preDistinct;
-  if (preDistinct > 0 && ratio < MIN_RETENTION_RATIO && !ALLOW_WIPE) {
-    throw new ReindexWipeDetectedError(preDistinct, retainedDistinct, MIN_RETENTION_RATIO);
-  }
-
   console.log(
     `[reindex] DONE files=${allFiles.length} pre=${preCount} post=${postCount} ` +
-      `ratio=${(ratio * 100).toFixed(1)}% inherited=${inheritedCount} ` +
-      `orphans-deleted=${orphanedDeleted} new-duplicates-dropped=${newDuplicatesDropped} ingest-errors=${fileErrors.length}`,
+      `ratio=${(ratio * 100).toFixed(1)}% kept=${t.kept} inserted=${t.inserted} deleted=${t.deleted} ` +
+      `adopted=${t.adopted} tombstoned=${t.tombstoned} ingest-errors=${fileErrors.length}`,
   );
   if (fileErrors.length > 0) {
     console.error(`[reindex] ${fileErrors.length} files failed; first 5:`);
     for (const fe of fileErrors.slice(0, 5)) console.error(`  - ${fe.file}: ${fe.error}`);
   }
 
-  return {
-    files: allFiles.length,
-    chunks: totalChunksIngested,
-    preCount,
-    postCount,
-    upserted: inheritedCount,
-    inserted: newChunks.length - newDuplicatesDropped,
-    preserved: inheritedCount,
-    orphaned: orphanedDeleted,
-  };
+  return { files: allFiles.length, preCount, postCount, ...t };
 }
 
 interface ReindexResult {
@@ -397,9 +260,13 @@ interface ReindexResult {
   dryRun?: boolean;
   preCount?: number;
   postCount?: number;
+  /** rows kept unchanged (name kept for API compatibility) */
   upserted?: number;
   inserted?: number;
+  /** rows removed because their content was edited away (name kept for API compatibility) */
   orphaned?: number;
+  adopted?: number;
+  tombstoned?: number;
 }
 
 export async function reindex(opts?: { dryRun?: boolean }): Promise<ReindexResult> {
@@ -417,10 +284,10 @@ export async function reindex(opts?: { dryRun?: boolean }): Promise<ReindexResul
         {
           dryRun: true,
           operation: "reindex",
-          mode: "UPSERT (emergency fix 2026-05-23)",
+          mode: "per-file diff in one transaction (2026-10-14)",
           wouldUpsert: {
             currentChunks,
-            note: "existing chunks preserved by content-fingerprint; metadata inherited",
+            note: "unchanged chunks keep their row (id, vector, history); files gone from disk are tombstoned, not deleted",
           },
           wouldProcess: {
             totalFiles: allFiles.length,
@@ -436,7 +303,8 @@ export async function reindex(opts?: { dryRun?: boolean }): Promise<ReindexResul
             coreTierRetention: "YES",
             entityRouting: "YES via routeIngest",
             wipeGuard: `YES via Layer-4 invariant (min ratio ${MIN_RETENTION_RATIO})`,
-            upsert: "YES via content-fingerprint match (no DELETE FROM chunks)",
+            upsert: "YES via chunk-sync (DELETE only for text edited away from a file still on disk)",
+            missingFiles: "tombstoned (nox-mem tombstones), never deleted",
           },
           estimatedDuration: "2-5 min depending on Gemini API latency",
         },
@@ -454,14 +322,17 @@ export async function reindex(opts?: { dryRun?: boolean }): Promise<ReindexResul
     return {
       files: r.files,
       chunks: r.chunks,
-      affected_rows: r.upserted + r.inserted,
+      // rows written; kept rows are untouched by design
+      affected_rows: r.inserted + r.deleted + r.adopted,
       notes: `db_source=main | ${r.files} files reindexed | pre=${r.preCount} post=${r.postCount} ` +
-        `inherited=${r.upserted} new=${r.inserted} orphans=${r.orphaned}`,
+        `kept=${r.kept} new=${r.inserted} deleted=${r.deleted} adopted=${r.adopted} tombstoned=${r.tombstoned}`,
       preCount: r.preCount,
       postCount: r.postCount,
-      upserted: r.upserted,
+      upserted: r.kept,
       inserted: r.inserted,
-      orphaned: r.orphaned,
+      orphaned: r.deleted,
+      adopted: r.adopted,
+      tombstoned: r.tombstoned,
     };
   });
 }

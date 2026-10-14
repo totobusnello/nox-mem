@@ -14,6 +14,11 @@ export interface IngestOneResult {
   chunks: number;
   kind: string;
   routedTo: string;
+  /** write-path diff, when the ingest reports it (chunk-sync.ts) */
+  inserted?: number[];
+  kept?: number;
+  deleted?: number;
+  adopted?: number;
 }
 
 export interface IngestManyDeps {
@@ -53,7 +58,9 @@ export async function ingestMany(paths: string[], deps: IngestManyDeps): Promise
     }
     try {
       const r = await deps.ingestOne(path);
-      deps.log(`[INFO] Ingested ${path}: ${r.chunks} chunks (kind=${r.kind}, via=${r.routedTo})`);
+      const diff = r.kept === undefined ? "" :
+        ` — ${r.inserted?.length ?? 0} new, ${r.kept} unchanged, ${r.deleted ?? 0} removed${r.adopted ? `, ${r.adopted} adopted` : ""}`;
+      deps.log(`[INFO] Ingested ${path}: ${r.chunks} chunks${diff} (kind=${r.kind}, via=${r.routedTo})`);
       ok++;
     } catch (err) {
       deps.error(`[ERROR] ${path}: ${err instanceof Error ? err.message : String(err)}`);

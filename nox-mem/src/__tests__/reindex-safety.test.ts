@@ -109,11 +109,29 @@ test("reindex: edited file replaces its chunk, new file is added", async () => {
   assert.equal(count(), 11);
 });
 
-test("reindex: retention guard refuses BEFORE deleting (rows survive the throw)", async () => {
+test("reindex: files gone from disk are tombstoned, not deleted (2026-10-14)", async () => {
+  // Before the write-path change this case deleted the 5 files' chunks and the
+  // retention guard fired. Now nothing is deleted, so there is nothing to guard.
   for (const i of [2, 3, 4, 5, 6]) unlinkSync(join(MEM, `n${i}.md`));
   const pre = count();
+  await reindex();
+  assert.equal(count(), pre, "a missing file keeps its chunks");
+  const t = getDb().prepare("SELECT source_file, reason FROM chunk_tombstones ORDER BY source_file").all() as Array<{ source_file: string; reason: string }>;
+  assert.deepEqual(t.map((r) => r.source_file), [2, 3, 4, 5, 6].map((i) => `memory/n${i}.md`));
+  assert.ok(t.every((r) => r.reason === "missing-at-reindex"));
+});
+
+test("reindex: retention guard rolls the whole run back BEFORE commit", async () => {
+  // A real loss: multi-section files shrink to one section each.
+  for (let i = 20; i < 30; i++) {
+    writeFileSync(join(MEM, `big${i}.md`), Array.from({ length: 6 }, (_, k) => `## S${k}\nsection ${k} of file ${i} with enough words to stand alone as a chunk of its own here.`).join("\n\n"));
+    await routeIngest(join(MEM, `big${i}.md`));
+  }
+  const before = ids();
+  for (let i = 20; i < 30; i++) writeFileSync(join(MEM, `big${i}.md`), `## S0\nsection 0 of file ${i} with enough words to stand alone as a chunk of its own here.`);
   await assert.rejects(() => reindex(), (e: Error) => e instanceof ReindexWipeDetectedError);
-  assert.ok(count() >= pre, `no chunk may be deleted when the guard fires (pre=${pre}, now=${count()})`);
+  assert.equal(ids(), before, "no row may change when the guard fires: the transaction rolled back");
+  for (let i = 20; i < 30; i++) unlinkSync(join(MEM, `big${i}.md`));
 });
 
 test("assertReindexSource: refuses when no source dir exists and the DB has chunks", () => {

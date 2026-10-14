@@ -1,7 +1,8 @@
-import { readFileSync } from "fs";
-import { relative } from "path";
+import { existsSync, readFileSync } from "fs";
+import { relative, resolve } from "path";
 import Database from "better-sqlite3";
 import { getDb } from "./db.js";
+import { syncFileChunks, type DesiredChunk } from "./lib/chunk-sync.js";
 import { getInitialTier, getInitialImportance } from "./tier-manager.js";
 import { resolveRetention } from "./retention.js";
 import { inferPain, inferImportance } from "./salience.js";
@@ -113,22 +114,27 @@ function sanitizeUtf8(text: string): string {
     .replace(/\u00c3\u00a2/g, "â");
 }
 
+export interface IngestFileResult {
+  chunks: number;
+  /** ids of rows created by this ingest (the ones that still need a vector) */
+  inserted: number[];
+  kept: number;
+  deleted: number;
+  adopted: number;
+}
+
+const EMPTY: IngestFileResult = { chunks: 0, inserted: [], kept: 0, deleted: 0, adopted: 0 };
+
 /**
- * @param filePath — absolute path to .md or .json file
- * @param externalDb — optional db connection (used by reindex for single-connection)
- * @param skipDelete — skip DELETE before insert (used by reindex since table is already cleared)
+ * Synchronous core: read, redact, chunk, and diff into the DB (chunk-sync.ts).
+ * No await inside, so a caller can run many files in one transaction (reindex).
+ * An empty file changes nothing — it is not read as "delete every chunk".
  */
-export async function ingestFile(filePath: string, externalDb?: Database.Database, skipDelete?: boolean): Promise<{ chunks: number }> {
-  const db = externalDb || getDb();
+export function ingestMarkdownSync(db: Database.Database, filePath: string): IngestFileResult {
   const relPath = relative(WORKSPACE, filePath);
-  // A2 (2026-04-25): entity routing moved to lib/ingest-router.ts — single dispatch.
-  // ingestFile() é agora handler de markdown puro; callers devem usar routeIngest()
-  // pra ter routing automático. Fallback path (forceMarkdown) chama ingestFile direto.
+  // A2 (2026-04-25): entity routing lives in lib/ingest-router.ts — single dispatch.
   let content = readFileSync(filePath, "utf-8");
-  if (!content.trim()) {
-    if (!externalDb) db.close();
-    return { chunks: 0 };
-  }
+  if (!content.trim()) return EMPTY;
 
   // Sanitize UTF-8
   content = sanitizeUtf8(content);
@@ -150,11 +156,6 @@ export async function ingestFile(filePath: string, externalDb?: Database.Databas
   const isJson = filePath.endsWith(".json");
   const textChunks = isJson ? chunkJson(content) : chunkMarkdown(content);
 
-  // Skip delete if called from reindex (table already cleared)
-  if (!skipDelete) {
-    db.prepare("DELETE FROM chunks WHERE source_file = ?").run(relPath);
-  }
-
   const tier = getInitialTier(chunkType);
   // Fase 1.7b-b — use smarter importance heuristic (falls back to initial if type unknown).
   // source_type is not known at ingest time for markdown (set post-ingest via migration);
@@ -163,44 +164,71 @@ export async function ingestFile(filePath: string, externalDb?: Database.Databas
   // Fase 1.7b-a — retention resolved once per file; per-chunk override via HTML
   // comment applies to the whole file (not per-chunk, to keep semantics simple).
   const retentionDays = resolveRetention(chunkType, content);
-  const insert = db.prepare(
-    "INSERT INTO chunks (source_file, chunk_text, chunk_type, source_date, metadata, tier, importance, retention_days, pain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  );
-  const insertMany = db.transaction((chunks: string[]) => {
-    for (const text of chunks) {
-      // Fase 1.7b-b — pain is per-chunk (text-driven); importance is per-file (type-driven).
-      const painScore = inferPain(chunkType, text);
-      insert.run(relPath, text, chunkType, sourceDate, null, tier, baseImportance, retentionDays, painScore);
-    }
-  });
-  insertMany(textChunks);
 
-  if (!externalDb) db.close();
-  
+  const desired: DesiredChunk[] = textChunks.map((text) => ({
+    chunk_text: text,
+    section: null,
+    chunk_type: chunkType,
+    source_date: sourceDate,
+    metadata: null,
+    tier,
+    importance: baseImportance,
+    retention_days: retentionDays,
+    // Fase 1.7b-b — pain is per-chunk (text-driven); importance is per-file (type-driven).
+    pain: inferPain(chunkType, text),
+    section_boost: null,
+  }));
+  const r = syncFileChunks(db, relPath, desired, { existsOnDisk: (p) => existsSync(resolve(WORKSPACE, p)) });
+  return { chunks: textChunks.length, inserted: r.inserted, kept: r.kept, deleted: r.deleted, adopted: r.adopted };
+}
+
+/** Max chunks embedded inline per ingest; the 4-hourly `vectorize` catches up the rest. */
+const INLINE_EMBED_CAP = 20;
+
+/**
+ * Embed the rows an ingest just created. Kept rows already have their vector —
+ * re-embedding unchanged text is what the NOOP exists to avoid.
+ */
+export async function embedInserted(db: Database.Database, ids: number[]): Promise<number> {
+  if (ids.length === 0 || !process.env.GEMINI_API_KEY) return 0;
+  let embedded = 0;
+  try {
+    const { embedDocument, ensureVecTable, upsertEmbedding } = await import("./embed.js");
+    ensureVecTable(db);
+    const get = db.prepare("SELECT chunk_text FROM chunks WHERE id = ?");
+    for (const id of ids.slice(0, INLINE_EMBED_CAP)) {
+      const row = get.get(id) as { chunk_text: string } | undefined;
+      if (!row) continue;
+      try {
+        const emb = await embedDocument(row.chunk_text);
+        if (emb && emb.length > 0) {
+          upsertEmbedding(db, id, emb);
+          embedded++;
+        }
+      } catch { break; } // Stop on first API error (rate limit)
+    }
+  } catch {}
+  return embedded;
+}
+
+/**
+ * @param filePath — absolute path to .md or .json file
+ * @param externalDb — optional db connection; reindex passes one and vectorizes in batch afterwards
+ *
+ * Never closes the connection. It used to `db.close()` the getDb() singleton,
+ * which pulled the handle out from under any caller holding it (withOpAudit,
+ * the API and MCP servers): an op wrapping ingest ended `failed` with its work
+ * done (HANDOFF 2026-10-14). Closing is the CLI entry point's job (closeDb()).
+ */
+export async function ingestFile(filePath: string, externalDb?: Database.Database): Promise<IngestFileResult> {
+  const db = externalDb || getDb();
+  const result = ingestMarkdownSync(db, filePath);
+
   // Auto-vectorize direct ingests only. Reindex passes externalDb and is followed
   // by a batch vectorize phase; embedding per file there is too expensive.
-  if (!externalDb && process.env.GEMINI_API_KEY) {
-    try {
-      const { embedDocument, ensureVecTable, upsertEmbedding } = await import("./embed.js");
-      const db = getDb();
-      ensureVecTable(db);
-      const newChunks = db.prepare(
-        "SELECT id, chunk_text FROM chunks WHERE source_file = ? ORDER BY id DESC LIMIT 20"
-      ).all(relPath) as Array<{ id: number; chunk_text: string }>;
-      
-      let embedded = 0;
-      for (const chunk of newChunks) {
-        try {
-          const emb = await embedDocument(chunk.chunk_text);
-          if (emb && emb.length > 0) {
-            upsertEmbedding(db, chunk.id, emb);
-            embedded++;
-          }
-        } catch { break; } // Stop on first API error (rate limit)
-      }
-      if (embedded > 0) console.log("[INGEST] Auto-vectorized " + embedded + " chunks");
-    } catch {}
+  if (!externalDb) {
+    const embedded = await embedInserted(db, result.inserted);
+    if (embedded > 0) console.log("[INGEST] Auto-vectorized " + embedded + " chunks");
   }
-
-  return { chunks: textChunks.length };
+  return result;
 }
