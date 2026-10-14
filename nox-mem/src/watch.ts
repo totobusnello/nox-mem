@@ -13,8 +13,9 @@ import { resolve, extname, relative } from "path";
 import { routeIngest } from "./lib/ingest-router.js";
 import { getDb } from "./db.js";
 import { tombstoneFile, tombstonePrefix } from "./lib/tombstone.js";
+import { workspaceRoot } from "./lib/workspace.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 // NOX_WATCH_DIRS: comma-separated list of ABSOLUTE paths to watch.
 // If unset, falls back to the default OpenClaw workspace layout below.

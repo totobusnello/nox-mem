@@ -8,9 +8,10 @@ import { isDuplicate as semanticIsDuplicate } from "./dedup.js";
 import { updateSessionState } from "./session-update.js";
 import { incrementMetric } from "./metrics.js";
 import { isNoise, learnNoise } from "./noise-filter.js";
+import { workspaceRoot } from "./lib/workspace.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";

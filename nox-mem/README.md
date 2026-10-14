@@ -115,7 +115,7 @@ nox-mem stats
 
 | Var | Default | Purpose |
 |---|---|---|
-| `OPENCLAW_WORKSPACE` | unset | Origin platform workspace root (origin/legacy only). ⚠️ Leave it unset on a standalone install: without `NOX_DB_PATH` it moves the database to `$OPENCLAW_WORKSPACE/tools/nox-mem/nox-mem.db`, a different and empty one. |
+| `OPENCLAW_WORKSPACE` | unset | Origin platform workspace root (origin/legacy only). ⚠️ Leave it unset on a standalone install: without `NOX_DB_PATH` it moves the database to `$OPENCLAW_WORKSPACE/tools/nox-mem/nox-mem.db`, a different and empty one. See [the workspace root](#where-files-are-keyed-from). |
 | `NOX_OP_AUDIT_ALLOWED_PREFIXES` | derived from `NOX_DB_PATH`/`NOX_MEM_DIR` + origin defaults | Comma-sep path prefixes the DB/snapshots may live under. |
 | `NOX_PRE_OP_SNAPSHOT_DIR` | `<NOX_MEM_DIR or the DB's folder>/.nox-snapshots` (standalone) | Pre-op snapshot directory. |
 | `NOX_PROTECTED_NAMES` | empty | Comma-sep names never auto-merged in the KG. |
@@ -124,7 +124,7 @@ nox-mem stats
 | `NOX_KNOWN_PROJECTS` | empty | Project slugs for `project-context-gen`. |
 | `NOX_AGENT_NAME` | unset | Who is searching, written to `search_telemetry.requesting_agent` as `<surface>:<agent>` (`mcp:atlas`, `cli:unknown`; searches with `track=false` become `probe:<agent>`). Over HTTP the `X-Agent-Name` header wins. Only `[a-z0-9_.-]{1,40}` is kept; anything else is recorded as `invalid`. |
 | `NOX_AGENTS` / `NOX_AGENTS_DIR` | empty / — | Multi-agent cross-search layout (no-op standalone). |
-| `NOX_WATCH_DIRS` | OpenClaw layout (`$OPENCLAW_WORKSPACE/memory`, `/shared`, …) | Comma-sep **absolute** dirs for `nox-mem watch`. Standalone: `NOX_WATCH_DIRS="$HOME/notes" nox-mem watch`. Unset on a machine without that layout, the watcher reports "Watching 0 directories". |
+| `NOX_WATCH_DIRS` | `<workspace>/memory`, `/shared` (+ OpenClaw agent folders) | Comma-sep **absolute** dirs for `nox-mem watch`. Unset on a standalone install it watches `~/.nox-mem/memory` (and `~/.nox-mem/shared` if present). Other folders: `NOX_WATCH_DIRS="$HOME/notes" nox-mem watch`. |
 | `NOX_SPEAKER_FILTER` | empty | One-time V7 migration speaker classification. |
 | `NOX_NOTION_TOKEN_PATH` | `/root/.config/notion/api_key` | Path of an optional Notion token file (only `doctor` looks at it). |
 
@@ -240,7 +240,7 @@ NOX_QUERY_EMBED_TIMEOUT_MS=5000 — time budget for embedding a search/reflect q
 nox-mem answer "question"  — grounded answer with citations (needs GEMINI_API_KEY); --as-of / --changed-since filter the evidence
 nox-mem ingest <files...>  — ingest one or more markdown/json files; a directory is an error naming it, the other files still run, exit 1 if any failed
 nox-mem watch              — auto-ingest changes; set NOX_WATCH_DIRS=/abs/dir[,/abs/dir2] (see Environment variables)
-nox-mem reindex            — rebuild the index from $OPENCLAW_WORKSPACE (see warning below)
+nox-mem reindex            — rebuild the index from <workspace>/memory and /shared (see warning below)
 nox-mem tombstones         — files gone from disk whose chunks are still stored (review queue); --all, --json
 nox-mem tombstone-keep <f> — review outcome: keep that content on purpose
 nox-mem tombstone-purge <f> — delete a tombstoned file's chunks (snapshot first; --dry-run)
@@ -264,9 +264,11 @@ HTTP endpoints worth knowing: `GET /api/health`, `GET /api/search?q=`, `GET /api
 
 The temporal filter is also on HTTP (`?as_of=` / `?changed_since=` on `/api/search`, or the same keys in a POST body) and MCP (`as_of` / `changed_since` on `nox_mem_search`). `answer` takes it too: `--as-of` / `--changed-since` on the CLI, and `as_of` / `changed_since` on `POST /api/answer` and on the `nox_mem_answer` MCP tool. A bad or blank date gives exit 2 / HTTP 400 / MCP `isError`. It is a hard SQL pre-filter on `created_at` / `updated_at` (ingestion time), not a ranking boost. `as_of` answers *which chunks existed then*, not *what they said then*: there is no version history, so a chunk edited after the date comes back with its current text. A bare date means the whole day in UTC (`--as-of 2026-05-01` includes 23:59 that day; `--changed-since 2026-05-01` starts at 00:00); a time without an offset is read as UTC. An unparseable date is an error on every surface (exit 2 / HTTP 400 / MCP `isError`), never a silently unfiltered search.
 
-> ⚠️ **`reindex` rebuilds only from `$OPENCLAW_WORKSPACE/memory` and `/shared`** (default workspace `/root/.openclaw/workspace`). If that source is missing or empty while the DB holds chunks, it **refuses before touching the DB**. It runs in one transaction: if the rebuild would drop more than 10% of the distinct content, it rolls back before commit (`NOX_REINDEX_MIN_RETENTION_RATIO`, override `NOX_REINDEX_ALLOW_WIPE=1`). Files under those two folders that left the disk are tombstoned, not deleted, and chunks ingested from anywhere else are left alone. Preview with `nox-mem reindex --dry-run`. On a standalone install that adds notes with `nox-mem ingest <file>` you normally do not need `reindex`.
+> ⚠️ **`reindex` rebuilds only from `<workspace>/memory` and `/shared`** (`~/.nox-mem` on a standalone install; see below). If that source is missing or empty while the DB holds chunks, it **refuses before touching the DB**. It runs in one transaction: if the rebuild would drop more than 10% of the distinct content, it rolls back before commit (`NOX_REINDEX_MIN_RETENTION_RATIO`, override `NOX_REINDEX_ALLOW_WIPE=1`). Files under those two folders that left the disk are tombstoned, not deleted, and chunks ingested from anywhere else are left alone. Preview with `nox-mem reindex --dry-run`. On a standalone install that adds notes with `nox-mem ingest <file>` you normally do not need `reindex`.
 
 > **Re-ingesting and deleting files.** Ingest compares a file's chunks with what is stored: unchanged chunks keep their id, embedding and access history, so re-saving a file costs nothing and references to its chunks (briefs, telemetry, knowledge-graph evidence) stay valid. Only new or edited text is written and embedded. When a file is deleted or moved away, its chunks are **not** removed: the watcher (or the next `reindex`) records a tombstone, the chunks stay searchable, and `nox-mem tombstones` lists them for review. If the same text shows up under a new path, the new file takes over the existing rows (a rename keeps ids). Chunks are only deleted by `nox-mem tombstone-purge <file>`, which takes a snapshot first.
+
+> <a id="where-files-are-keyed-from"></a>**Where files are keyed from.** Every stored chunk records its file relative to a workspace root, and the layout under it means something: `memory/entities/<type>/` files get the entity format, `memory/` and `shared/` are what `reindex` and `watch` cover. The root is `$OPENCLAW_WORKSPACE` if set; else `/root/.openclaw/workspace` if that directory exists; else **`~/.nox-mem`**, so on a standalone install notes in `~/.nox-mem/memory` are keyed `memory/…` and files elsewhere `../…`. Up to 3.5.x a standalone install keyed everything relative to `/root/.openclaw/workspace` (`../../../home/you/…`), so entity files were ingested as plain notes; the first open under 3.6.0 (schema 20) rewrites those keys once and leaves a copy of the database at `<db>.pre-v20-keys.bak`. Re-ingest your `memory/entities/` files afterwards to get the entity format.
 
 > **Where the database lives.** `NOX_DB_PATH` if set; else `$OPENCLAW_WORKSPACE/tools/nox-mem/nox-mem.db`; else an existing `<package>/nox-mem.db` (installs from ≤3.4 keep working — with a warning if it sits inside `node_modules`, which `npm update -g` replaces); else `~/.nox-mem/nox.db`. `nox-mem doctor` prints the resolved path.
 

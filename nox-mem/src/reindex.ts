@@ -42,10 +42,12 @@ import { existsSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { join, relative, resolve } from "path";
 import { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError, MIN_RETENTION_RATIO } from "./reindex-errors.js";
+import { workspaceRoot, workspaceRootWithSource } from "./lib/workspace.js";
+import { DEFAULT_STANDALONE_DB_PATH } from "./lib/db-path.js";
 
 export { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError } from "./reindex-errors.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 // Layer 4: tunable safety thresholds (env-overridable for emergency operations).
 // MIN_RETENTION_RATIO imported from reindex-errors.ts (single source of truth).
@@ -94,7 +96,12 @@ export function assertReindexSource(preCount: number): void {
   // workspace's own DB — how origin crons call it — passes.
   if (process.env.NOX_DB_PATH && !process.env.OPENCLAW_WORKSPACE) {
     const dbPath = resolve(process.env.NOX_DB_PATH);
-    const workspaceDbPath = resolve(WORKSPACE, "tools", "nox-mem", "nox-mem.db");
+    // The workspace's own DB: origin layout keeps it under tools/nox-mem; the
+    // standalone root (~/.nox-mem) is where the default standalone DB lives.
+    const workspaceDbPath =
+      workspaceRootWithSource().source === "standalone"
+        ? DEFAULT_STANDALONE_DB_PATH
+        : resolve(WORKSPACE, "tools", "nox-mem", "nox-mem.db");
     if (dbPath !== workspaceDbPath) throw new ReindexWorkspaceMismatchError(dbPath, workspaceDbPath);
   }
   if (ALLOW_WIPE) return;

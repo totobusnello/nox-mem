@@ -7,8 +7,9 @@ import { getInitialTier, getInitialImportance } from "./tier-manager.js";
 import { resolveRetention } from "./retention.js";
 import { inferPain, inferImportance } from "./salience.js";
 import { redact } from "./privacy/filter.js";
+import { workspaceRoot } from "./lib/workspace.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 const TYPE_MAP: Record<string, string> = {
   "memory/decisions.md": "decision",

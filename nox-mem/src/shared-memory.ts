@@ -8,8 +8,9 @@ import { getDb } from "./db.js";
 import Database from "better-sqlite3";
 import { existsSync } from "fs";
 import { resolve } from "path";
+import { workspaceRoot } from "./lib/workspace.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 const SHARED_DB = resolve(WORKSPACE, "tools/nox-mem/shared-memory.db");
 
 // NOX_AGENTS_DIR: base directory where agent sub-dirs live.
