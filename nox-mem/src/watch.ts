@@ -3,12 +3,16 @@
  *
  * Monitors memory files across all 6 agent workspaces.
  * On change: debounce 2s → ingest file → log.
+ * On a path that no longer exists (delete, or the old side of a rename):
+ * tombstone its chunks — they stay, marked for review (lib/tombstone.ts).
  * Skips: binary files, .db, .json session files, tmp files.
  */
 
 import { watch, statSync, existsSync } from "fs";
-import { resolve, extname, basename } from "path";
+import { resolve, extname, relative } from "path";
 import { routeIngest } from "./lib/ingest-router.js";
+import { getDb } from "./db.js";
+import { tombstoneFile } from "./lib/tombstone.js";
 
 const WORKSPACE = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
 
@@ -68,8 +72,21 @@ function shouldProcess(filepath: string): boolean {
 const debounceMap = new Map<string, ReturnType<typeof setTimeout>>();
 const DEBOUNCE_MS = 2000;
 
+function tombstoneMissing(filepath: string): void {
+  const rel = relative(WORKSPACE, filepath);
+  if (rel.startsWith("..")) return; // NOX_WATCH_DIRS outside the workspace: no source_file to match
+  try {
+    const r = tombstoneFile(getDb(), rel, existsSync(filepath), "deleted");
+    if (r.status === "tombstoned") {
+      console.log(`[WATCH] ${new Date().toISOString()} tombstoned ${r.chunks} chunks ← ${rel} (kept; review with: nox-mem tombstones)`);
+    }
+  } catch (err) {
+    console.error(`[WATCH] Error tombstoning ${filepath}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function processFile(filepath: string): Promise<void> {
-  if (!existsSync(filepath)) return; // deleted
+  if (!existsSync(filepath)) return tombstoneMissing(filepath); // deleted or renamed away
   try {
     const stat = statSync(filepath);
     if (!stat.isFile()) return;
@@ -77,8 +94,12 @@ async function processFile(filepath: string): Promise<void> {
     if (stat.size > 5 * 1024 * 1024) return; // skip > 5MB
 
     const result = await routeIngest(filepath);
-    if (result && result.chunks > 0) {
-      console.log(`[WATCH] ${new Date().toISOString()} +${result.chunks} chunks ← ${filepath.replace(WORKSPACE, "")}`);
+    const changed = (result.inserted?.length ?? 0) + (result.deleted ?? 0) + (result.adopted ?? 0);
+    if (result && changed > 0) {
+      console.log(
+        `[WATCH] ${new Date().toISOString()} +${result.inserted?.length ?? 0} new, -${result.deleted ?? 0} removed, ` +
+          `${result.kept ?? 0} kept, ${result.adopted ?? 0} adopted ← ${filepath.replace(WORKSPACE, "")}`,
+      );
     }
   } catch (err) {
     // Non-fatal: file may be locked or deleted mid-write

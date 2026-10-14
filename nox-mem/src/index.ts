@@ -121,6 +121,103 @@ program
     closeDb();
   });
 
+// ─── Tombstones (write path without loss, 2026-10-14) ──────────────────────
+// A file that leaves the disk keeps its chunks; these commands mark, review and
+// — only on explicit request, under withOpAudit — purge them.
+async function tombstonePath(arg: string): Promise<{ rel: string; onDisk: boolean }> {
+  const { existsSync } = await import("fs");
+  const { isAbsolute, relative, resolve } = await import("path");
+  const ws = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+  const rel = isAbsolute(arg) ? relative(ws, arg) : arg;
+  if (rel.startsWith("..")) throw new Error(`${arg} is outside the workspace (${ws})`);
+  return { rel, onDisk: existsSync(resolve(ws, rel)) };
+}
+
+program
+  .command("tombstone <files...>")
+  .description("Mark files that left the disk; their chunks stay (used by the watcher on delete/move)")
+  .action(async (files: string[]) => {
+    const { tombstoneFile } = await import("./lib/tombstone.js");
+    for (const f of files) {
+      try {
+        const { rel, onDisk } = await tombstonePath(f);
+        const r = tombstoneFile(getDb(), rel, onDisk, "deleted");
+        console.log(`[TOMBSTONE] ${rel}: ${r.status}${r.chunks ? ` (${r.chunks} chunks kept)` : ""}`);
+      } catch (err) {
+        console.error(`[TOMBSTONE] ${f}: ${(err as Error).message}`);
+        process.exitCode = 1;
+      }
+    }
+    closeDb();
+  });
+
+program
+  .command("tombstones")
+  .description("List files gone from disk whose chunks are still stored (review queue)")
+  .option("--all", "Include resolved (renamed / emptied) and kept tombstones")
+  .option("--json", "JSON output")
+  .action(async (opts: { all?: boolean; json?: boolean }) => {
+    const { listTombstones } = await import("./lib/tombstone.js");
+    const rows = listTombstones(getDb(), { all: opts.all });
+    if (opts.json) {
+      console.log(JSON.stringify(rows, null, 2));
+    } else if (rows.length === 0) {
+      console.log("[TOMBSTONES] none");
+    } else {
+      for (const r of rows) {
+        const extra = [
+          r.renamed_to ? `renamed_to=${r.renamed_to}` : "",
+          r.kept_at ? `kept ${r.kept_at}` : "",
+          r.duplicated_elsewhere ? `${r.duplicated_elsewhere} also stored under another path` : "",
+        ].filter(Boolean).join(", ");
+        console.log(`${r.tombstoned_at}  ${r.reason.padEnd(18)} ${String(r.live_chunks).padStart(5)} chunks  ${r.source_file}${extra ? `  (${extra})` : ""}`);
+      }
+    }
+    closeDb();
+  });
+
+program
+  .command("tombstone-keep <file>")
+  .description("Review outcome: keep this content on purpose (leaves the review queue, never adopted)")
+  .action(async (file: string) => {
+    const { keepTombstone } = await import("./lib/tombstone.js");
+    const { rel } = await tombstonePath(file);
+    console.log(keepTombstone(getDb(), rel) ? `[TOMBSTONE] ${rel}: kept` : `[TOMBSTONE] ${rel}: no open tombstone`);
+    closeDb();
+  });
+
+program
+  .command("tombstone-purge <file>")
+  .description("Delete the chunks of a tombstoned file (snapshot first via op-audit)")
+  .option("--dry-run", "Report how many chunks would be deleted; no write")
+  .option("--allow-prod", "Skip the large-DB guard (same as NOX_ALLOW_PROD_INGEST=1)")
+  .action(async (file: string, opts: { dryRun?: boolean; allowProd?: boolean }) => {
+    const { purgeTombstone } = await import("./lib/tombstone.js");
+    const { rel, onDisk } = await tombstonePath(file);
+    if (opts.dryRun) {
+      const r = purgeTombstone(getDb(), rel, onDisk, { dryRun: true });
+      console.log(JSON.stringify({ op: "tombstone-purge", dry_run: true, source_file: rel, ...r }));
+      closeDb();
+      return;
+    }
+    if (opts.allowProd) process.env.NOX_ALLOW_PROD_INGEST = "1";
+    checkLargeDbIngestGuard(getDb(), "tombstone-purge");
+    const { withOpAudit } = await import("./lib/op-audit.js");
+    let refused: string | undefined;
+    const result = await withOpAudit("tombstone-purge", async () => {
+      const r = purgeTombstone(getDb(), rel, onDisk);
+      refused = r.refused;
+      return { affected_rows: r.chunks, notes: `source_file=${rel}${r.refused ? ` refused=${r.refused}` : ""}` };
+    });
+    if (refused) {
+      console.error(`[TOMBSTONE] ${rel}: purge refused (${refused})`);
+      process.exitCode = 1;
+    } else {
+      console.log(`[TOMBSTONE] ${rel}: purged ${result.affected_rows ?? 0} chunks`);
+    }
+    closeDb();
+  });
+
 program
   .command("reindex")
   .description("Rebuild the index from $OPENCLAW_WORKSPACE/memory and /shared (refuses if that source is missing)")

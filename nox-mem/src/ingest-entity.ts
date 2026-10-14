@@ -26,6 +26,7 @@ import { readFileSync } from "fs";
 import { relative } from "path";
 import Database from "better-sqlite3";
 import { getDb } from "./db.js";
+import { syncFileChunks, type DesiredChunk } from "./lib/chunk-sync.js";
 import { getInitialTier } from "./tier-manager.js";
 import { resolveRetention } from "./retention.js";
 import { inferPain, inferImportance } from "./salience.js";
@@ -134,6 +135,91 @@ function parseSimpleYaml(raw: string): EntityFrontmatter {
   return out;
 }
 
+export interface EntityIngestResult {
+  parsed: boolean;
+  chunks: number;
+  /** rowid of the `compiled` chunk; null when the file has none */
+  compiledChunkId: number | null;
+  /** ids of rows created by this ingest */
+  inserted: number[];
+  kept: number;
+  deleted: number;
+  adopted: number;
+}
+
+/**
+ * Synchronous core (no await, so reindex can run it inside one transaction).
+ * Diffs the file's N+2 chunks against what is stored (chunk-sync.ts): an entity
+ * whose compiled truth changed gets ONE new row; frontmatter and the untouched
+ * timeline entries keep their ids. The key includes the section, so the
+ * `compiled == frontmatter` invariant (CLAUDE.md rule 6) holds per file.
+ */
+export function ingestEntitySync(db: Database.Database, filePath: string): EntityIngestResult {
+  const relPath = relative(WORKSPACE, filePath);
+  const content = readFileSync(filePath, "utf-8");
+
+  const entity = parseEntityFile(content);
+  if (!entity) {
+    return { parsed: false, chunks: 0, compiledChunkId: null, inserted: [], kept: 0, deleted: 0, adopted: 0 };
+  }
+
+  const chunkType = inferChunkTypeFromPath(relPath);
+  const tier = getInitialTier(chunkType);
+  const importance = inferImportance(chunkType);
+  // Compiled truth represents user-declared current state → bump importance
+  const compiledImportance = Math.max(importance, 0.9);
+  const retentionDays = resolveRetention(chunkType, content);
+  const today = new Date().toISOString().slice(0, 10);
+  const name = entity.frontmatter.name ?? null;
+
+  // Privacy filter: redact before storage (staged-privacy follow-up Wave Q)
+  const redacted = (text: string, where: string): string => {
+    const r = _redactPrivacy(text);
+    if (r.redactionCount > 0) {
+      console.warn(`[privacy-filter] redacted ${r.redactionCount} secret(s) in entity ${where} — kinds: ${r.kinds.join(", ")}`);
+    }
+    return r.text;
+  };
+  const chunk = (text: string, section: string, metadata: Record<string, unknown>, imp: number): DesiredChunk => ({
+    chunk_text: text,
+    section,
+    chunk_type: chunkType,
+    source_date: null,
+    metadata: JSON.stringify(metadata),
+    tier,
+    importance: imp,
+    retention_days: retentionDays,
+    pain: inferPain(chunkType, text),
+    section_boost: SECTION_BOOST[section] ?? null,
+  });
+
+  const desired: DesiredChunk[] = [];
+  // 1. Frontmatter chunk
+  desired.push(chunk(redacted(`---\n${entity.frontmatterRaw}\n---`, "frontmatter"), "frontmatter",
+    { section: "frontmatter", entity: name }, importance));
+  // 2. Compiled truth chunk — single chunk, the "current state"
+  const compiledAt = entity.compiled ? desired.length : -1;
+  if (entity.compiled) {
+    desired.push(chunk(redacted(entity.compiled, "compiled"), "compiled",
+      { section: "compiled", entity: name, recompiled_at: today }, compiledImportance));
+  }
+  // 3. Timeline entries — one chunk each, reverse-chronological preserved as-is
+  for (const entry of entity.timeline) {
+    desired.push(chunk(redacted(entry, "timeline"), "timeline", { section: "timeline", entity: name }, importance));
+  }
+
+  const r = syncFileChunks(db, relPath, desired);
+  return {
+    parsed: true,
+    chunks: desired.length,
+    compiledChunkId: compiledAt >= 0 ? r.ids[compiledAt]! : null,
+    inserted: r.inserted,
+    kept: r.kept,
+    deleted: r.deleted,
+    adopted: r.adopted,
+  };
+}
+
 /**
  * Ingest a single entity file as 1 frontmatter chunk + 1 compiled chunk
  * + N timeline chunks. All chunks share the same source_file relative path.
@@ -143,102 +229,14 @@ function parseSimpleYaml(raw: string): EntityFrontmatter {
  *   memory/entities/projects/ → 'project' (365d retention)
  *   memory/entities/systems/  → 'other' (90d — system state evolves)
  *   memory/entities/people/   → 'person'
+ *
+ * Never closes the connection (see ingestFile).
  */
 export async function ingestEntityFile(
   filePath: string,
   externalDb?: Database.Database,
-): Promise<{ parsed: boolean; chunks: number }> {
-  const relPath = relative(WORKSPACE, filePath);
-  const content = readFileSync(filePath, "utf-8");
-
-  const entity = parseEntityFile(content);
-  if (!entity) {
-    return { parsed: false, chunks: 0 };
-  }
-
-  const db = externalDb ?? getDb();
-
-  const chunkType = inferChunkTypeFromPath(relPath);
-  const tier = getInitialTier(chunkType);
-  const importance = inferImportance(chunkType);
-  // Compiled truth represents user-declared current state → bump importance
-  const compiledImportance = Math.max(importance, 0.9);
-  const retentionDays = resolveRetention(chunkType, content);
-
-  // Delete previous chunks from this file (idempotent re-ingest)
-  db.prepare("DELETE FROM chunks WHERE source_file = ?").run(relPath);
-
-  const insert = db.prepare(`
-    INSERT INTO chunks (source_file, chunk_text, chunk_type, source_date, metadata, tier, importance, retention_days, pain, section, section_boost)
-    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const today = new Date().toISOString().slice(0, 10);
-
-  let count = 0;
-  db.transaction(() => {
-    // 1. Frontmatter chunk
-    let fmText = `---\n${entity.frontmatterRaw}\n---`;
-    // Privacy filter: redact before INSERT (staged-privacy follow-up Wave Q)
-    const _rFm = _redactPrivacy(fmText);
-    fmText = _rFm.text;
-    if (_rFm.redactionCount > 0) {
-      console.warn(
-        `[privacy-filter] redacted ${_rFm.redactionCount} secret(s) in entity frontmatter — kinds: ${_rFm.kinds.join(", ")}`
-      );
-    }
-    insert.run(
-      relPath, fmText, chunkType,
-      JSON.stringify({ section: "frontmatter", entity: entity.frontmatter.name ?? null }),
-      tier, importance, retentionDays, inferPain(chunkType, fmText),
-      "frontmatter", SECTION_BOOST.frontmatter,
-    );
-    count++;
-
-    // 2. Compiled truth chunk — single chunk, the "current state"
-    if (entity.compiled) {
-      let compiledText = entity.compiled;
-      // Privacy filter: redact before INSERT (staged-privacy follow-up Wave Q)
-      const _rCo = _redactPrivacy(compiledText);
-      compiledText = _rCo.text;
-      if (_rCo.redactionCount > 0) {
-        console.warn(
-          `[privacy-filter] redacted ${_rCo.redactionCount} secret(s) in entity compiled — kinds: ${_rCo.kinds.join(", ")}`
-        );
-      }
-      insert.run(
-        relPath, compiledText, chunkType,
-        JSON.stringify({ section: "compiled", entity: entity.frontmatter.name ?? null, recompiled_at: today }),
-        tier, compiledImportance, retentionDays, inferPain(chunkType, compiledText),
-        "compiled", SECTION_BOOST.compiled,
-      );
-      count++;
-    }
-
-    // 3. Timeline entries — one chunk each, reverse-chronological preserved as-is
-    for (const entry of entity.timeline) {
-      let entryText = entry;
-      // Privacy filter: redact before INSERT (staged-privacy follow-up Wave Q)
-      const _rTl = _redactPrivacy(entryText);
-      entryText = _rTl.text;
-      if (_rTl.redactionCount > 0) {
-        console.warn(
-          `[privacy-filter] redacted ${_rTl.redactionCount} secret(s) in entity timeline — kinds: ${_rTl.kinds.join(", ")}`
-        );
-      }
-      insert.run(
-        relPath, entryText, chunkType,
-        JSON.stringify({ section: "timeline", entity: entity.frontmatter.name ?? null }),
-        tier, importance, retentionDays, inferPain(chunkType, entryText),
-        "timeline", SECTION_BOOST.timeline,
-      );
-      count++;
-    }
-  })();
-
-  if (!externalDb) db.close();
-
-  return { parsed: true, chunks: count };
+): Promise<EntityIngestResult> {
+  return ingestEntitySync(externalDb ?? getDb(), filePath);
 }
 
 function inferChunkTypeFromPath(relPath: string): string {

@@ -1,0 +1,137 @@
+// tombstone.ts — what happens to chunks when their file leaves the disk
+// (ROADMAP v6 item 3b, 2026-10-14).
+//
+// Before: the watcher ignored deletions (chunks stayed forever, unmarked) and
+// reindex DELETEd every chunk whose file it did not find — including files kept
+// on purpose after their source left the disk (D-2026-09-30: mac-docs PESSOAL /
+// BANCOS). A rename left the old path's chunks behind as duplicates.
+//
+// Now a file that leaves the disk gets a TOMBSTONE row. Its chunks stay where
+// they are, searchable as before — nothing here deletes on its own:
+//   - a later ingest of the same path removes the tombstone (the file came back);
+//   - an ingest of a NEW path with identical chunk text adopts the rows
+//     (chunk-sync.ts), so a rename keeps ids and vectors; the tombstone then
+//     records `renamed_to`;
+//   - `kept_at` marks a tombstone reviewed as "keep this content" (excluded from
+//     adoption and from the default listing);
+//   - only purgeTombstone(), called by an explicit operator command under
+//     withOpAudit, deletes chunks.
+//
+// Ranking is NOT touched: demoting tombstoned chunks is a scoring change and
+// goes through its own feat(search) + shadow (CLAUDE.md rule 5).
+//
+// The table is created lazily (like ensureVecTable) instead of by a schema
+// bump: the npm and production lineages number their schema versions
+// differently, and a CREATE TABLE IF NOT EXISTS lands the same on both.
+
+import Database from "better-sqlite3";
+
+export type TombstoneReason = "deleted" | "missing-at-reindex";
+
+export function ensureTombstoneTable(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS chunk_tombstones (
+    source_file TEXT PRIMARY KEY,
+    tombstoned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    reason TEXT NOT NULL,
+    chunks_at_tombstone INTEGER NOT NULL,
+    renamed_to TEXT,
+    kept_at TEXT
+  )`);
+}
+
+export type TombstoneStatus = "tombstoned" | "already" | "no-chunks" | "exists-on-disk";
+
+/**
+ * Mark `relPath` as gone from disk. `existsOnDisk` is passed in (not probed
+ * here) so the caller decides how a path resolves against its workspace.
+ */
+export function tombstoneFile(
+  db: Database.Database,
+  relPath: string,
+  existsOnDisk: boolean,
+  reason: TombstoneReason,
+): { status: TombstoneStatus; chunks: number } {
+  ensureTombstoneTable(db);
+  if (existsOnDisk) return { status: "exists-on-disk", chunks: 0 };
+  const chunks = (db.prepare("SELECT COUNT(*) AS c FROM chunks WHERE source_file = ?").get(relPath) as { c: number }).c;
+  if (chunks === 0) return { status: "no-chunks", chunks: 0 };
+  const r = db
+    .prepare("INSERT OR IGNORE INTO chunk_tombstones (source_file, reason, chunks_at_tombstone) VALUES (?, ?, ?)")
+    .run(relPath, reason, chunks);
+  return { status: r.changes > 0 ? "tombstoned" : "already", chunks };
+}
+
+/** Called inside chunk-sync's transaction after a file is (re)ingested. */
+export function resolveTombstoneOnIngest(db: Database.Database, relPath: string, adoptedFrom: string[]): void {
+  db.prepare("DELETE FROM chunk_tombstones WHERE source_file = ?").run(relPath);
+  const mark = db.prepare("UPDATE chunk_tombstones SET renamed_to = ? WHERE source_file = ?");
+  for (const from of adoptedFrom) mark.run(relPath, from);
+}
+
+export interface TombstoneRow {
+  source_file: string;
+  tombstoned_at: string;
+  reason: string;
+  chunks_at_tombstone: number;
+  renamed_to: string | null;
+  kept_at: string | null;
+  /** chunks still stored under this path */
+  live_chunks: number;
+  /** of those, how many have identical text stored under another path */
+  duplicated_elsewhere: number;
+}
+
+/** Default: tombstones that still hold chunks and were not reviewed as kept. */
+export function listTombstones(db: Database.Database, opts: { all?: boolean } = {}): TombstoneRow[] {
+  ensureTombstoneTable(db);
+  const rows = db
+    .prepare(
+      `SELECT t.*,
+              (SELECT COUNT(*) FROM chunks c WHERE c.source_file = t.source_file) AS live_chunks,
+              (SELECT COUNT(*) FROM chunks c
+                WHERE c.source_file = t.source_file
+                  AND EXISTS (SELECT 1 FROM chunks o
+                               WHERE o.chunk_text = c.chunk_text AND o.source_file != c.source_file)
+              ) AS duplicated_elsewhere
+         FROM chunk_tombstones t
+        ORDER BY t.tombstoned_at, t.source_file`,
+    )
+    .all() as TombstoneRow[];
+  return opts.all ? rows : rows.filter((r) => r.live_chunks > 0 && r.kept_at === null);
+}
+
+/** Review outcome "keep": content stays, tombstone leaves the default listing. */
+export function keepTombstone(db: Database.Database, relPath: string): boolean {
+  ensureTombstoneTable(db);
+  return db.prepare("UPDATE chunk_tombstones SET kept_at = datetime('now') WHERE source_file = ? AND kept_at IS NULL")
+    .run(relPath).changes > 0;
+}
+
+export type PurgeRefusal = "no-tombstone" | "kept" | "exists-on-disk";
+
+/**
+ * The ONLY place that deletes a tombstoned file's chunks. Callers wrap it in
+ * withOpAudit (snapshot first). Refuses when the file is back on disk, when it
+ * was never tombstoned, or when it was reviewed as kept.
+ */
+export function purgeTombstone(
+  db: Database.Database,
+  relPath: string,
+  existsOnDisk: boolean,
+  opts: { dryRun?: boolean } = {},
+): { refused?: PurgeRefusal; chunks: number } {
+  ensureTombstoneTable(db);
+  if (existsOnDisk) return { refused: "exists-on-disk", chunks: 0 };
+  const t = db.prepare("SELECT kept_at FROM chunk_tombstones WHERE source_file = ?").get(relPath) as
+    | { kept_at: string | null }
+    | undefined;
+  if (!t) return { refused: "no-tombstone", chunks: 0 };
+  if (t.kept_at !== null) return { refused: "kept", chunks: 0 };
+  const chunks = (db.prepare("SELECT COUNT(*) AS c FROM chunks WHERE source_file = ?").get(relPath) as { c: number }).c;
+  if (opts.dryRun) return { chunks };
+  db.transaction(() => {
+    db.prepare("DELETE FROM chunks WHERE source_file = ?").run(relPath);
+    db.prepare("DELETE FROM chunk_tombstones WHERE source_file = ?").run(relPath);
+  })();
+  return { chunks };
+}

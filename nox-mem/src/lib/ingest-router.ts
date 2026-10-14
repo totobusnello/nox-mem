@@ -11,8 +11,8 @@
 
 import type Database from "better-sqlite3";
 import { relative } from "node:path";
-import { ingestFile } from "../ingest.js";
-import { ingestEntityFile } from "../ingest-entity.js";
+import { ingestFile, ingestMarkdownSync } from "../ingest.js";
+import { ingestEntityFile, ingestEntitySync } from "../ingest-entity.js";
 
 const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
 
@@ -22,13 +22,21 @@ export interface IngestRouteResult {
   chunks: number;
   kind: IngestKind;
   routedTo: string;
+  /** write-path diff (chunk-sync.ts): rows created / kept / removed / adopted from a rename */
+  inserted?: number[];
+  kept?: number;
+  deleted?: number;
+  adopted?: number;
 }
 
 export interface IngestOpts {
   externalDb?: Database.Database;
-  skipDelete?: boolean;
   forceKind?: IngestKind; // override auto-detect
 }
+
+const diffOf = (r: { inserted: number[]; kept: number; deleted: number; adopted: number }) => ({
+  inserted: r.inserted, kept: r.kept, deleted: r.deleted, adopted: r.adopted,
+});
 
 /**
  * Detect ingest kind from path conventions. Centralizada aqui — mexer só nesse
@@ -52,26 +60,45 @@ export async function routeIngest(filePath: string, opts: IngestOpts = {}): Prom
   switch (kind) {
     case "entity": {
       const r = await ingestEntityFile(filePath, opts.externalDb);
-      if (r.parsed) return { chunks: r.chunks, kind: "entity", routedTo: "ingestEntityFile" };
+      if (r.parsed) return { chunks: r.chunks, kind: "entity", routedTo: "ingestEntityFile", ...diffOf(r) };
       // Entity file failed parse — fall through to markdown ingest pra não perder dado
-      const fallback = await ingestFile(filePath, opts.externalDb, opts.skipDelete);
-      return { chunks: fallback.chunks, kind: "markdown", routedTo: "ingestFile (fallback after entity parse fail)" };
+      const fallback = await ingestFile(filePath, opts.externalDb);
+      return { chunks: fallback.chunks, kind: "markdown", routedTo: "ingestFile (fallback after entity parse fail)", ...diffOf(fallback) };
     }
     case "graphify":
       // Hoje não existe graphify-ingest separado pra arquivos individuais (graphify
       // produz JSON em batch via skill própria). Cair no markdown como tratamento neutro.
       // Reservado pra Wave 2+ se virar handler dedicado.
-      return await ingestFile(filePath, opts.externalDb, opts.skipDelete).then((r) => ({
+      return await ingestFile(filePath, opts.externalDb).then((r) => ({
         chunks: r.chunks,
         kind: "graphify" as const,
         routedTo: "ingestFile (graphify path neutralized)",
+        ...diffOf(r),
       }));
     case "markdown":
     default:
-      return await ingestFile(filePath, opts.externalDb, opts.skipDelete).then((r) => ({
+      return await ingestFile(filePath, opts.externalDb).then((r) => ({
         chunks: r.chunks,
         kind: "markdown" as const,
         routedTo: "ingestFile",
+        ...diffOf(r),
       }));
   }
+}
+
+/**
+ * Synchronous dispatch for reindex, which runs every file inside ONE
+ * transaction so its wipe guard can roll back before commit. Same routing as
+ * routeIngest; no inline embedding (reindex vectorizes in batch afterwards).
+ */
+export function routeIngestSync(db: Database.Database, filePath: string): IngestRouteResult {
+  const kind = detectIngestKind(filePath);
+  if (kind === "entity") {
+    const r = ingestEntitySync(db, filePath);
+    if (r.parsed) return { chunks: r.chunks, kind: "entity", routedTo: "ingestEntitySync", ...diffOf(r) };
+    const fallback = ingestMarkdownSync(db, filePath);
+    return { chunks: fallback.chunks, kind: "markdown", routedTo: "ingestMarkdownSync (fallback after entity parse fail)", ...diffOf(fallback) };
+  }
+  const r = ingestMarkdownSync(db, filePath);
+  return { chunks: r.chunks, kind, routedTo: "ingestMarkdownSync", ...diffOf(r) };
 }
