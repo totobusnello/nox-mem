@@ -40,6 +40,24 @@ export function sourceKey(path: string): string {
   return relative(process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace", resolve(path));
 }
 
+/**
+ * What a CLI argument names: either a key exactly as `nox-mem tombstones` lists
+ * it (the review workflow pastes it back), or a path on disk relative to the cwd
+ * (`sourceKey`). The two coincide when the cwd is the workspace. When they differ
+ * and both are stored, they are two different files, so refuse rather than guess.
+ */
+export function resolveSourceArg(db: Database.Database, arg: string): string {
+  ensureTombstoneTable(db);
+  const fromPath = sourceKey(arg);
+  const stored = (k: string) =>
+    db.prepare("SELECT 1 FROM chunks WHERE source_file = ? UNION ALL SELECT 1 FROM chunk_tombstones WHERE source_file = ? LIMIT 1").get(k, k) !== undefined;
+  const hits = [...new Set([arg, fromPath])].filter(stored);
+  if (hits.length > 1) {
+    throw new Error(`ambiguous: "${arg}" is a stored key, and as a path from the cwd it is "${fromPath}", also stored. Pass an absolute path, or run from the workspace.`);
+  }
+  return hits[0] ?? fromPath;
+}
+
 export type TombstoneReason = "deleted" | "missing-at-reindex";
 
 export function ensureTombstoneTable(db: Database.Database): void {

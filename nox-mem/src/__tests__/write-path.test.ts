@@ -23,7 +23,7 @@ for (const k of ["GEMINI_API_KEY", "OPENAI_API_KEY", "NOX_EMBEDDING_API_KEY", "N
 process.env.OPENCLAW_WORKSPACE = WS;
 
 let getDb: any, closeDb: any, routeIngest: any;
-let tombstoneFile: any, listTombstones: any, keepTombstone: any, purgeTombstone: any, sourceKey: any;
+let tombstoneFile: any, listTombstones: any, keepTombstone: any, purgeTombstone: any, sourceKey: any, resolveSourceArg: any;
 
 const rows = (rel: string) =>
   getDb().prepare("SELECT id, chunk_text, section FROM chunks WHERE source_file = ? ORDER BY id").all(rel) as Array<{
@@ -40,7 +40,7 @@ const doc = (n: number, edits: Record<number, string> = {}) =>
 before(async () => {
   ({ getDb, closeDb } = await import("../db.js"));
   ({ routeIngest } = await import("../lib/ingest-router.js"));
-  ({ tombstoneFile, listTombstones, keepTombstone, purgeTombstone, sourceKey } = await import("../lib/tombstone.js"));
+  ({ tombstoneFile, listTombstones, keepTombstone, purgeTombstone, sourceKey, resolveSourceArg } = await import("../lib/tombstone.js"));
   getDb().exec("CREATE TABLE IF NOT EXISTS vec_chunk_map (vec_rowid INTEGER PRIMARY KEY, chunk_id INTEGER NOT NULL UNIQUE)");
 });
 
@@ -363,6 +363,31 @@ test("sourceKey lands on the key ingest wrote — relative or absolute, inside o
 test("every tombstone CLI command resolves its path through sourceKey", () => {
   const src = readFileSync(join(import.meta.dirname, "..", "..", "src", "index.ts"), "utf8");
   const fn = src.slice(src.indexOf("async function tombstonePath"), src.indexOf("program", src.indexOf("async function tombstonePath")));
-  assert.ok(fn.includes("sourceKey(arg)"), fn);
+  assert.ok(fn.includes("resolveSourceArg(getDb(), arg)"), fn);
   assert.ok(!fn.includes('startsWith("..")'), "tombstonePath refuses keys outside the workspace again");
+});
+
+test("a CLI argument may be the key as `tombstones` lists it, or a path from the cwd; both stored ⇒ refuse", async () => {
+  const cwd = process.cwd();
+  try {
+    writeFileSync(join(MEM, "k.md"), doc(2));
+    await routeIngest(join(MEM, "k.md"));
+    // Review workflow: paste the listed key back, from any cwd.
+    process.chdir(TMP_ROOT);
+    assert.equal(resolveSourceArg(getDb(), "memory/k.md"), "memory/k.md");
+    // Path from the cwd, inside the workspace.
+    process.chdir(WS);
+    assert.equal(resolveSourceArg(getDb(), "memory/k.md"), "memory/k.md");
+    process.chdir(MEM);
+    assert.equal(resolveSourceArg(getDb(), "k.md"), "memory/k.md");
+    // Nothing stored under either reading ⇒ the path reading (reports no-chunks downstream).
+    assert.equal(resolveSourceArg(getDb(), "nope.md"), "memory/nope.md");
+    // Two different stored files under the two readings ⇒ refuse.
+    mkdirSync(join(MEM, "memory"), { recursive: true });
+    writeFileSync(join(MEM, "memory", "k.md"), doc(3, { 0: " nested" }));
+    await routeIngest(join(MEM, "memory", "k.md"));
+    assert.throws(() => resolveSourceArg(getDb(), "memory/k.md"), /ambiguous/);
+  } finally {
+    process.chdir(cwd);
+  }
 });

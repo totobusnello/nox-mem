@@ -124,14 +124,17 @@ program
 // ─── Tombstones (write path without loss, 2026-10-14) ──────────────────────
 // A file that leaves the disk keeps its chunks; these commands mark, review and
 // — only on explicit request, under withOpAudit — purge them.
-// The key is the one ingest wrote (`sourceKey`). It used to keep a relative
-// argument as typed and refuse anything outside the workspace, which on a
-// standalone install (keys start with `../`) missed or refused every file.
+// The argument is a key as `tombstones` lists it, or a path from the cwd
+// (`resolveSourceArg`). It used to keep a relative argument as typed and refuse
+// anything outside the workspace, which on a standalone install (keys start
+// with `../`) missed or refused every path.
 async function tombstonePath(arg: string): Promise<{ rel: string; onDisk: boolean }> {
   const { existsSync } = await import("fs");
   const { resolve } = await import("path");
-  const { sourceKey } = await import("./lib/tombstone.js");
-  return { rel: sourceKey(arg), onDisk: existsSync(resolve(arg)) };
+  const { resolveSourceArg } = await import("./lib/tombstone.js");
+  const ws = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+  const rel = resolveSourceArg(getDb(), arg);
+  return { rel, onDisk: existsSync(resolve(ws, rel)) };
 }
 
 program
