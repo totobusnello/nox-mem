@@ -272,7 +272,7 @@ async function handleRequest(req: { id: number | string; method: string; params?
               asOf: args.as_of as string | undefined,
               changedSince: args.changed_since as string | undefined,
             });
-            const results = await searchHybrid(query, limit, true, filter);
+            const results = await searchHybrid(query, limit, true, filter, { surface: "mcp", agent: process.env.NOX_AGENT_NAME });
             text = formatResults(results);
             break;
           }

@@ -105,7 +105,7 @@ async function gatherEvidence(question: string): Promise<Evidence> {
   // 1. Hybrid search top 10 (async because semantic is async)
   let searchResults: SearchResult[];
   try {
-    searchResults = await searchHybrid(question, 10);
+    searchResults = await searchHybrid(question, 10, true, undefined, { surface: "reflect", agent: process.env.NOX_AGENT_NAME });
   } catch {
     searchResults = search(question, 10); // fallback to FTS only
   }

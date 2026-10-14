@@ -122,6 +122,7 @@ nox-mem stats
 | `NOX_NAME_ALIASES` | empty | `from:To` name-normalization pairs for the KG. |
 | `NOX_ENTITY_PATTERNS` / `NOX_PROJECT_PATTERNS` | empty | Terms for the legacy regex entity extractor. |
 | `NOX_KNOWN_PROJECTS` | empty | Project slugs for `project-context-gen`. |
+| `NOX_AGENT_NAME` | unset | Who is searching, written to `search_telemetry.requesting_agent` as `<surface>:<agent>` (`mcp:atlas`, `cli:unknown`; searches with `track=false` become `probe:<agent>`). Over HTTP the `X-Agent-Name` header wins. Only `[a-z0-9_.-]{1,40}` is kept; anything else is recorded as `invalid`. |
 | `NOX_AGENTS` / `NOX_AGENTS_DIR` | empty / — | Multi-agent cross-search layout (no-op standalone). |
 | `NOX_WATCH_DIRS` | OpenClaw layout (`$OPENCLAW_WORKSPACE/memory`, `/shared`, …) | Comma-sep **absolute** dirs for `nox-mem watch`. Standalone: `NOX_WATCH_DIRS="$HOME/notes" nox-mem watch`. Unset on a machine without that layout, the watcher reports "Watching 0 directories". |
 | `NOX_SPEAKER_FILTER` | empty | One-time V7 migration speaker classification. |
