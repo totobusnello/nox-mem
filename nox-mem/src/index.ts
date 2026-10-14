@@ -136,11 +136,20 @@ async function tombstonePath(arg: string): Promise<{ rel: string; onDisk: boolea
 program
   .command("tombstone <files...>")
   .description("Mark files that left the disk; their chunks stay (used by the watcher on delete/move)")
-  .action(async (files: string[]) => {
-    const { tombstoneFile } = await import("./lib/tombstone.js");
+  .option("--dir", "The paths are directories that left the disk: tombstone every stored file under them")
+  .action(async (files: string[], opts: { dir?: boolean }) => {
+    const { tombstoneFile, tombstonePrefix } = await import("./lib/tombstone.js");
+    const { existsSync } = await import("fs");
+    const { resolve } = await import("path");
+    const ws = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
     for (const f of files) {
       try {
         const { rel, onDisk } = await tombstonePath(f);
+        if (opts.dir) {
+          const r = tombstonePrefix(getDb(), rel, (p) => existsSync(resolve(ws, p)), "deleted");
+          console.log(`[TOMBSTONE] ${rel}/: ${r.files} files tombstoned (${r.chunks} chunks kept)`);
+          continue;
+        }
         const r = tombstoneFile(getDb(), rel, onDisk, "deleted");
         console.log(`[TOMBSTONE] ${rel}: ${r.status}${r.chunks ? ` (${r.chunks} chunks kept)` : ""}`);
       } catch (err) {

@@ -8,11 +8,11 @@
  * Skips: binary files, .db, .json session files, tmp files.
  */
 
-import { watch, statSync, existsSync } from "fs";
+import { watch, statSync, existsSync, readdirSync } from "fs";
 import { resolve, extname, relative } from "path";
 import { routeIngest } from "./lib/ingest-router.js";
 import { getDb } from "./db.js";
-import { tombstoneFile } from "./lib/tombstone.js";
+import { tombstoneFile, tombstonePrefix } from "./lib/tombstone.js";
 
 const WORKSPACE = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
 
@@ -121,6 +121,36 @@ function debounceIngest(filepath: string): void {
   debounceMap.set(filepath, timer);
 }
 
+function walkFiles(dir: string): string[] {
+  const out: string[] = [];
+  try {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = resolve(dir, e.name);
+      if (e.isDirectory()) out.push(...walkFiles(p));
+      else if (e.isFile() && shouldProcess(p)) out.push(p);
+    }
+  } catch {}
+  return out;
+}
+
+function debounceTombstoneDir(dirpath: string): void {
+  const key = `dir:${dirpath}`;
+  const existing = debounceMap.get(key);
+  if (existing) clearTimeout(existing);
+  debounceMap.set(key, setTimeout(() => {
+    debounceMap.delete(key);
+    if (existsSync(dirpath)) return;
+    const rel = relative(WORKSPACE, dirpath);
+    if (rel.startsWith("..") || rel === "") return;
+    try {
+      const r = tombstonePrefix(getDb(), rel, (p) => existsSync(resolve(WORKSPACE, p)), "deleted");
+      if (r.files > 0) console.log(`[WATCH] ${new Date().toISOString()} tombstoned ${r.files} files (${r.chunks} chunks kept) ← ${rel}/`);
+    } catch (err) {
+      console.error(`[WATCH] Error tombstoning ${dirpath}/: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, DEBOUNCE_MS));
+}
+
 export function startWatch(verbose = false): void {
   let watcherCount = 0;
   const started: string[] = [];
@@ -135,7 +165,17 @@ export function startWatch(verbose = false): void {
       watch(dir, { recursive: true }, (eventType, filename) => {
         if (!filename) return;
         const filepath = resolve(dir, filename);
-        if (!shouldProcess(filepath)) return;
+        if (SKIP_PATTERNS.some((p) => p.test(filepath))) return;
+        if (!shouldProcess(filepath)) {
+          // A directory moved in arrives as ONE event: ingest what is inside it.
+          // A path without an allowed extension that is gone may have been a
+          // directory moved out or removed: tombstone what was stored under it.
+          let isDir = false;
+          try { isDir = statSync(filepath).isDirectory(); } catch {}
+          if (isDir) walkFiles(filepath).forEach(debounceIngest);
+          else if (!existsSync(filepath) && extname(filepath) === "") debounceTombstoneDir(filepath);
+          return;
+        }
         debounceIngest(filepath);
       });
       watcherCount++;

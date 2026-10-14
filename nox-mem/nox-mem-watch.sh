@@ -9,6 +9,11 @@
 #   delete, moved_from     → tombstone: the chunks stay, marked for review
 #                            (nox-mem tombstones). Never deleted from here.
 #
+# Directories: inotify reports `mv dir/ elsewhere/` as ONE event on the
+# directory, not one per file. So no --include filter (it would drop directory
+# events, whose names have no .md/.json): a directory leaving → tombstone --dir;
+# a directory arriving → ingest every file inside (rename keeps ids by adoption).
+#
 # No debounce: ingest is a per-chunk diff, so re-ingesting an unchanged file
 # writes nothing. The old leading-edge debounce dropped the LAST write when two
 # landed inside the window — a file created empty and filled a second later was
@@ -20,23 +25,38 @@ WATCH_DIRS=(
     "$WORKSPACE/shared"
 )
 
+NOX=/usr/local/bin/nox-mem
+
 inotifywait -m -r -e close_write,moved_to,delete,moved_from \
-    --include '\.(md|json)$' \
     "${WATCH_DIRS[@]}" \
     --format '%e|%w%f' 2>/dev/null | while IFS='|' read -r events file; do
 
+    if [[ "$events" == *ISDIR* ]]; then
+        case "$events" in
+            *DELETE*|*MOVED_FROM*)
+                "$NOX" tombstone --dir "$file" 2>&1 | logger -t nox-mem-watcher ;;
+            *MOVED_TO*)
+                find "$file" -type f \( -name '*.md' -o -name '*.json' \) \
+                    ! -name MEMORY.md ! -name SESSION-STATE.md -print0 |
+                    while IFS= read -r -d '' f; do
+                        "$NOX" ingest "$f" 2>&1 | logger -t nox-mem-watcher
+                    done ;;
+        esac
+        continue
+    fi
+
+    [[ "$file" =~ \.(md|json)$ ]] || continue
     # Skip MEMORY.md and SESSION-STATE.md
     [[ "$file" == *"/MEMORY.md" ]] && continue
     [[ "$file" == *"/SESSION-STATE.md" ]] && continue
-    [[ "$events" == *ISDIR* ]] && continue
 
     case "$events" in
         *DELETE*|*MOVED_FROM*)
-            /usr/local/bin/nox-mem tombstone "$file" 2>&1 | logger -t nox-mem-watcher
+            "$NOX" tombstone "$file" 2>&1 | logger -t nox-mem-watcher
             ;;
         *)
             if [[ -f "$file" ]]; then
-                /usr/local/bin/nox-mem ingest "$file" 2>&1 | logger -t nox-mem-watcher
+                "$NOX" ingest "$file" 2>&1 | logger -t nox-mem-watcher
             fi
             ;;
     esac

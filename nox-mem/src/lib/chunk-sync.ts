@@ -12,8 +12,11 @@
 //   - a new key is INSERTed;
 //   - a stored key the file no longer produces is DELETEd (the text was edited
 //     away; that is the file's own content changing, not a loss);
-//   - when the file has no rows yet, rows of a TOMBSTONED file with the same key
-//     are ADOPTED (re-pointed to the new path) — that is how a rename keeps ids.
+//   - when the file has no rows yet, a WHOLE tombstoned file is ADOPTED
+//     (re-pointed to the new path) when every one of its rows has a key in the
+//     new file — that is how a rename keeps ids. Never paragraph by paragraph:
+//     a shared paragraph is not a rename, and an adopted row would later be
+//     "edited away" from a file it never belonged to (Codex, nox-workspace#56).
 //
 // Matching is a multiset: a file that legitimately repeats a paragraph keeps
 // one row per occurrence. When the DB holds MORE copies than the file (the
@@ -39,6 +42,13 @@ export interface DesiredChunk {
   section_boost: number | null;
 }
 
+/** Explicit per-call values that must also land on KEPT rows (id and vector stay). */
+export interface RefreshKept {
+  pain?: boolean;
+  metadata?: boolean;
+  importance?: boolean;
+}
+
 export interface SyncResult {
   /** row id for each desired chunk, in the order given */
   ids: number[];
@@ -54,6 +64,7 @@ interface StoredRow {
   section: string | null;
   retention_days: number | null;
   source_file: string;
+  tier: string | null;
 }
 
 const keyOf = (section: string | null, text: string): string => `${section ?? ""}\u0000${text}`;
@@ -99,36 +110,89 @@ function bucket(rows: StoredRow[], embedded: Set<number>): Map<string, StoredRow
  * Make the stored chunks of `relPath` equal to `desired`, touching only what
  * changed. Runs in one transaction (a savepoint when the caller already holds one).
  */
-export function syncFileChunks(db: Database.Database, relPath: string, desired: DesiredChunk[]): SyncResult {
+export function syncFileChunks(
+  db: Database.Database,
+  relPath: string,
+  desired: DesiredChunk[],
+  opts: {
+    refreshKept?: RefreshKept;
+    /** a tombstoned file that is back on disk is not a rename source (Kimi, #56) */
+    existsOnDisk?: (relPath: string) => boolean;
+  } = {},
+): SyncResult {
   ensureTombstoneTable(db);
 
   const run = db.transaction((): SyncResult => {
     const stored = db
-      .prepare("SELECT id, chunk_text, section, retention_days, source_file FROM chunks WHERE source_file = ?")
+      .prepare("SELECT id, chunk_text, section, retention_days, source_file, tier FROM chunks WHERE source_file = ?")
       .all(relPath) as StoredRow[];
     const own = bucket(stored, embeddedAmong(db, stored.map((r) => r.id)));
 
-    // Rename: only a path with no rows can adopt, and only from tombstoned files
-    // (never from a file that is merely absent from disk — D-2026-09-30 keeps
-    // some of those on purpose, and an adopted row would later be edited away).
-    let foreign = new Map<string, StoredRow[]>();
+    // Rename: only a path with no rows can adopt, only WHOLE files, and only from
+    // tombstones the watcher OBSERVED being deleted/moved (reason 'deleted').
+    // Never from 'missing-at-reindex': reindex tombstones every file absent from
+    // disk, including those D-2026-09-30 keeps on purpose (Codex, #56).
+    const foreign = new Map<string, StoredRow[]>();
     if (stored.length === 0 && desired.length > 0) {
       const candidates = db
         .prepare(
-          `SELECT c.id, c.chunk_text, c.section, c.retention_days, c.source_file
+          `SELECT c.id, c.chunk_text, c.section, c.retention_days, c.source_file, c.tier
              FROM chunks c JOIN chunk_tombstones t ON t.source_file = c.source_file
-            WHERE t.kept_at IS NULL AND c.source_file != ?`,
+            WHERE t.kept_at IS NULL AND t.reason = 'deleted' AND c.source_file != ?`,
         )
         .all(relPath) as StoredRow[];
-      if (candidates.length > 0) foreign = bucket(candidates, embeddedAmong(db, candidates.map((r) => r.id)));
+      if (candidates.length > 0) {
+        const want = new Map<string, number>();
+        for (const d of desired) {
+          const k = keyOf(d.section, d.chunk_text);
+          want.set(k, (want.get(k) ?? 0) + 1);
+        }
+        const byFile = new Map<string, StoredRow[]>();
+        for (const c of candidates) {
+          const list = byFile.get(c.source_file);
+          if (list) list.push(c);
+          else byFile.set(c.source_file, [c]);
+        }
+        // Largest file first; a file is adopted only if ALL its rows fit in what
+        // the new file still has unclaimed.
+        for (const rowsOfFile of [...byFile.values()].sort((a, b) => b.length - a.length)) {
+          if (opts.existsOnDisk?.(rowsOfFile[0]!.source_file)) continue;
+          const need = new Map<string, number>();
+          for (const r of rowsOfFile) {
+            const k = keyOf(r.section, r.chunk_text);
+            need.set(k, (need.get(k) ?? 0) + 1);
+          }
+          if (![...need].every(([k, n]) => (want.get(k) ?? 0) >= n)) continue;
+          for (const [k, n] of need) want.set(k, want.get(k)! - n);
+          const embedded = embeddedAmong(db, rowsOfFile.map((r) => r.id));
+          for (const [k, list] of bucket(rowsOfFile, embedded)) {
+            const cur = foreign.get(k);
+            if (cur) cur.push(...list);
+            else foreign.set(k, list);
+          }
+        }
+      }
     }
 
     const insert = db.prepare(
       `INSERT INTO chunks (source_file, chunk_text, chunk_type, source_date, metadata, tier, importance, retention_days, pain, section, section_boost)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    const setRetention = db.prepare("UPDATE chunks SET retention_days = ? WHERE id = ?");
-    const adopt = db.prepare("UPDATE chunks SET source_file = ?, retention_days = ? WHERE id = ?");
+    // `core` rows keep retention_days = NULL (never decay) — the same contract
+    // reindex enforces; re-deriving it from the file type would move salience.
+    const setRetention = db.prepare("UPDATE chunks SET retention_days = ? WHERE id = ? AND COALESCE(tier, '') != 'core'");
+    const adopt = db.prepare(
+      "UPDATE chunks SET source_file = ?, retention_days = CASE WHEN tier = 'core' THEN NULL ELSE ? END WHERE id = ?",
+    );
+    const refresh = opts.refreshKept;
+    const refreshSql = [
+      refresh?.pain ? "pain = @pain" : "",
+      refresh?.metadata ? "metadata = @metadata" : "",
+      refresh?.importance ? "importance = @importance" : "",
+    ].filter(Boolean);
+    const setRefreshed = refreshSql.length > 0
+      ? db.prepare(`UPDATE chunks SET ${refreshSql.join(", ")} WHERE id = @id`)
+      : null;
     const del = db.prepare("DELETE FROM chunks WHERE id = ?");
 
     const ids: number[] = [];
@@ -145,7 +209,10 @@ export function syncFileChunks(db: Database.Database, relPath: string, desired: 
         // retention is resolved per file from its content (an HTML-comment
         // override can change without the chunk changing); everything else on a
         // kept row is history worth keeping.
-        if (row.retention_days !== d.retention_days) setRetention.run(d.retention_days, row.id);
+        if (row.retention_days !== d.retention_days && row.tier !== "core") setRetention.run(d.retention_days, row.id);
+        // Values the caller set EXPLICITLY (e.g. Paper 2's adjudicated pain and
+        // metadata) must land even when the text is unchanged (Codex, #56).
+        setRefreshed?.run({ id: row.id, pain: d.pain, metadata: d.metadata, importance: d.importance });
         ids.push(row.id);
         kept++;
         continue;
@@ -175,5 +242,9 @@ export function syncFileChunks(db: Database.Database, relPath: string, desired: 
     return { ids, kept, inserted, deleted, adopted };
   });
 
-  return run();
+  // IMMEDIATE takes the write lock before the read: two ingests of the same new
+  // file (watcher + a manual CLI run) would otherwise both see "no rows" in
+  // their WAL snapshot and insert it twice (Kimi, #56). Nested inside a
+  // caller's transaction (reindex, Paper 2) this is a savepoint as before.
+  return db.inTransaction ? run() : run.immediate();
 }

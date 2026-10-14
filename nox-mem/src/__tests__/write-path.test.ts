@@ -216,3 +216,103 @@ test("(b) purge: refuses on disk / kept / never tombstoned; deletes only on expl
   assert.equal(rows("memory/trash.md").length, 0);
   assert.equal(listTombstones(db, { all: true }).some((x: any) => x.source_file === "memory/trash.md"), false);
 });
+
+// ─── Codex review of nox-workspace#56 (2026-10-14) ─────────────────────────────
+
+test("Codex#1: a shared paragraph is not a rename — partial overlap adopts nothing", async () => {
+  writeFileSync(join(MEM, "old1.md"), [SECTION(40), SECTION(41)].join("\n\n"));
+  await routeIngest(join(MEM, "old1.md"));
+  const oldIds = rows("memory/old1.md").map((r) => r.id);
+  unlinkSync(join(MEM, "old1.md"));
+  tombstoneFile(getDb(), "memory/old1.md", false, "deleted");
+
+  writeFileSync(join(MEM, "new1.md"), [SECTION(40), SECTION(42)].join("\n\n"));
+  const r = await routeIngest(join(MEM, "new1.md"));
+  assert.equal(r.adopted, 0);
+  // Editing the shared paragraph out of the new file must not touch the old file's row.
+  writeFileSync(join(MEM, "new1.md"), SECTION(42));
+  await routeIngest(join(MEM, "new1.md"));
+  assert.deepEqual(rows("memory/old1.md").map((x) => x.id), oldIds);
+});
+
+test("Codex#1: a whole file inside a bigger new one (rename + additions) is adopted", async () => {
+  writeFileSync(join(MEM, "old2.md"), SECTION(43));
+  await routeIngest(join(MEM, "old2.md"));
+  const id = rows("memory/old2.md")[0]!.id;
+  unlinkSync(join(MEM, "old2.md"));
+  tombstoneFile(getDb(), "memory/old2.md", false, "deleted");
+  writeFileSync(join(MEM, "new2.md"), [SECTION(43), SECTION(44)].join("\n\n"));
+  const r = await routeIngest(join(MEM, "new2.md"));
+  assert.deepEqual([r.adopted, r.inserted.length], [1, 1]);
+  assert.ok(rows("memory/new2.md").some((x) => x.id === id));
+});
+
+test("Codex#2: a file tombstoned by reindex (missing-at-reindex) is never adopted", async () => {
+  getDb().prepare("INSERT INTO chunks (source_file, chunk_type, chunk_text) VALUES ('memory/mac-docs/PESSOAL/old.md', 'other', ?)").run(SECTION(45));
+  tombstoneFile(getDb(), "memory/mac-docs/PESSOAL/old.md", false, "missing-at-reindex");
+  writeFileSync(join(MEM, "fortyfive.md"), SECTION(45));
+  const r = await routeIngest(join(MEM, "fortyfive.md"));
+  assert.equal(r.adopted, 0);
+  assert.equal(rows("memory/mac-docs/PESSOAL/old.md").length, 1);
+});
+
+test("Codex#3: explicit values (refreshKept) land on a kept row; id stays", async () => {
+  const { syncFileChunks } = await import("../lib/chunk-sync.js");
+  const db = getDb();
+  const base = { section: "compiled", chunk_type: "lesson", source_date: null, tier: "working", importance: 0.9, retention_days: 180, section_boost: 2 };
+  const first = syncFileChunks(db, "memory/entities/lessons/ep1.md", [{ ...base, chunk_text: "same text", pain: 0.2, metadata: "{}" }]);
+  const again = syncFileChunks(db, "memory/entities/lessons/ep1.md",
+    [{ ...base, chunk_text: "same text", pain: 1.0, metadata: '{"p2":{"severity":"S4"}}' }],
+    { refreshKept: { pain: true, metadata: true } });
+  assert.deepEqual(again.ids, first.ids);
+  const row = db.prepare("SELECT pain, metadata FROM chunks WHERE id = ?").get(first.ids[0]) as { pain: number; metadata: string };
+  assert.equal(row.pain, 1.0);
+  assert.equal(row.metadata, '{"p2":{"severity":"S4"}}');
+  // without refreshKept, a plain re-ingest keeps the stored values
+  syncFileChunks(db, "memory/entities/lessons/ep1.md", [{ ...base, chunk_text: "same text", pain: 0.2, metadata: "{}" }]);
+  assert.equal((db.prepare("SELECT pain FROM chunks WHERE id = ?").get(first.ids[0]) as { pain: number }).pain, 1.0);
+});
+
+test("Codex#4: a core chunk keeps retention_days = NULL across re-ingest", async () => {
+  writeFileSync(join(MEM, "core.md"), SECTION(46));
+  await routeIngest(join(MEM, "core.md"));
+  const id = rows("memory/core.md")[0]!.id;
+  getDb().prepare("UPDATE chunks SET tier = 'core', retention_days = NULL WHERE id = ?").run(id);
+  await routeIngest(join(MEM, "core.md"));
+  const row = getDb().prepare("SELECT retention_days FROM chunks WHERE id = ?").get(id) as { retention_days: number | null };
+  assert.equal(row.retention_days, null);
+});
+
+test("Codex#5: a moved directory — tombstone by prefix, then its files adopt by path", async () => {
+  const { tombstonePrefix } = await import("../lib/tombstone.js");
+  const { existsSync } = await import("fs");
+  mkdirSync(join(MEM, "foo"), { recursive: true });
+  writeFileSync(join(MEM, "foo", "a.md"), SECTION(47));
+  writeFileSync(join(MEM, "foo", "b.md"), SECTION(48));
+  await routeIngest(join(MEM, "foo", "a.md"));
+  await routeIngest(join(MEM, "foo", "b.md"));
+  const before = [...rows("memory/foo/a.md"), ...rows("memory/foo/b.md")].map((x) => x.id).sort();
+  renameSync(join(MEM, "foo"), join(MEM, "bar"));
+
+  const t = tombstonePrefix(getDb(), "memory/foo", (p: string) => existsSync(join(WS, p)), "deleted");
+  assert.deepEqual(t, { files: 2, chunks: 2 });
+  await routeIngest(join(MEM, "bar", "a.md"));
+  await routeIngest(join(MEM, "bar", "b.md"));
+  const after = [...rows("memory/bar/a.md"), ...rows("memory/bar/b.md")].map((x) => x.id).sort();
+  assert.deepEqual(after, before);
+});
+
+// ─── Kimi review of nox-workspace#56 (2026-10-14) ──────────────────────────────
+
+test("Kimi: a tombstoned file restored to disk (not yet re-ingested) is not adopted by another path", async () => {
+  writeFileSync(join(MEM, "back.md"), SECTION(50));
+  await routeIngest(join(MEM, "back.md"));
+  const id = rows("memory/back.md")[0]!.id;
+  unlinkSync(join(MEM, "back.md"));
+  tombstoneFile(getDb(), "memory/back.md", false, "deleted");
+  writeFileSync(join(MEM, "back.md"), SECTION(50)); // restored while the watcher was down
+  writeFileSync(join(MEM, "copycat.md"), SECTION(50));
+  const r = await routeIngest(join(MEM, "copycat.md"));
+  assert.equal(r.adopted, 0);
+  assert.equal(rows("memory/back.md")[0]!.id, id);
+});

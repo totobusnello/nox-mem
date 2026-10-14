@@ -22,8 +22,8 @@
 //
 // Each file produces N+2 chunks: 1 frontmatter + 1 compiled + N timeline entries.
 
-import { readFileSync } from "fs";
-import { relative } from "path";
+import { existsSync, readFileSync } from "fs";
+import { relative, resolve } from "path";
 import Database from "better-sqlite3";
 import { getDb } from "./db.js";
 import { syncFileChunks, type DesiredChunk } from "./lib/chunk-sync.js";
@@ -208,7 +208,7 @@ export function ingestEntitySync(db: Database.Database, filePath: string): Entit
     desired.push(chunk(redacted(entry, "timeline"), "timeline", { section: "timeline", entity: name }, importance));
   }
 
-  const r = syncFileChunks(db, relPath, desired);
+  const r = syncFileChunks(db, relPath, desired, { existsOnDisk: (p) => existsSync(resolve(WORKSPACE, p)) });
   return {
     parsed: true,
     chunks: desired.length,

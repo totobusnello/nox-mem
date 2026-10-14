@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
-import { relative } from "path";
+import { existsSync, readFileSync } from "fs";
+import { relative, resolve } from "path";
 import Database from "better-sqlite3";
 import { getDb } from "./db.js";
 import { syncFileChunks, type DesiredChunk } from "./lib/chunk-sync.js";
@@ -178,7 +178,7 @@ export function ingestMarkdownSync(db: Database.Database, filePath: string): Ing
     pain: inferPain(chunkType, text),
     section_boost: null,
   }));
-  const r = syncFileChunks(db, relPath, desired);
+  const r = syncFileChunks(db, relPath, desired, { existsOnDisk: (p) => existsSync(resolve(WORKSPACE, p)) });
   return { chunks: textChunks.length, inserted: r.inserted, kept: r.kept, deleted: r.deleted, adopted: r.adopted };
 }
 

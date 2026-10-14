@@ -61,6 +61,32 @@ export function tombstoneFile(
   return { status: r.changes > 0 ? "tombstoned" : "already", chunks };
 }
 
+/**
+ * A directory left the disk (rm -r, or the old side of `mv dir/ other/`):
+ * tombstone every stored file under it that is no longer on disk. inotify
+ * reports a moved directory as ONE event, not one per file inside it.
+ */
+export function tombstonePrefix(
+  db: Database.Database,
+  relDir: string,
+  existsOnDisk: (relPath: string) => boolean,
+  reason: TombstoneReason,
+): { files: number; chunks: number } {
+  ensureTombstoneTable(db);
+  const prefix = relDir.replace(/\/+$/, "") + "/";
+  const files = db
+    .prepare("SELECT DISTINCT source_file FROM chunks WHERE substr(source_file, 1, ?) = ?")
+    .all(prefix.length, prefix) as Array<{ source_file: string }>;
+  let n = 0, chunks = 0;
+  db.transaction(() => {
+    for (const { source_file } of files) {
+      const r = tombstoneFile(db, source_file, existsOnDisk(source_file), reason);
+      if (r.status === "tombstoned") { n++; chunks += r.chunks; }
+    }
+  })();
+  return { files: n, chunks };
+}
+
 /** Called inside chunk-sync's transaction after a file is (re)ingested. */
 export function resolveTombstoneOnIngest(db: Database.Database, relPath: string, adoptedFrom: string[]): void {
   db.prepare("DELETE FROM chunk_tombstones WHERE source_file = ?").run(relPath);
