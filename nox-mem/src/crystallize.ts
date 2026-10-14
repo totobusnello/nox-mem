@@ -70,8 +70,8 @@ export async function crystallize(input: ProcedureInput): Promise<number> {
   // Skip silently if GEMINI_API_KEY is missing or embed fails — FTS still works.
   try {
     if (process.env.GEMINI_API_KEY) {
-      const { embedText, upsertEmbedding } = await import("./embed.js");
-      const vec = await embedText(chunkText);
+      const { embedDocument, upsertEmbedding } = await import("./embed.js");
+      const vec = await embedDocument(chunkText);
       upsertEmbedding(db, id, vec);
     }
   } catch (err) {

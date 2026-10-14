@@ -215,14 +215,17 @@ export function queryEmbedTimeoutMs(env: NodeJS.ProcessEnv = process.env): numbe
   return Number.isFinite(n) && n >= 0 ? n : 5000;
 }
 
-/** Test seam: replaces the provider call behind embedText (null restores it). */
-let embedOverride: ((text: string, signal?: AbortSignal) => Promise<Float32Array>) | null = null;
+/**
+ * Test seam: replaces the provider call behind embedText and embedDocument (null
+ * restores it). `kind` tells which side of retrieval the call embeds.
+ */
+let embedOverride: ((text: string, signal?: AbortSignal, kind?: "query" | "document") => Promise<Float32Array>) | null = null;
 export function __setEmbedForTests(fn: typeof embedOverride): void {
   embedOverride = fn;
 }
 
 async function embedTextUnbounded(text: string, signal?: AbortSignal): Promise<Float32Array> {
-  if (embedOverride) return embedOverride(text, signal);
+  if (embedOverride) return embedOverride(text, signal, "query");
   // Route to abstract provider when configured; keep native Gemini path as default.
   const provider = activeEmbeddingProvider();
   if (provider !== null) {
@@ -231,6 +234,24 @@ async function embedTextUnbounded(text: string, signal?: AbortSignal): Promise<F
   }
   const values = await geminiEmbedQuery(text, signal);
   return new Float32Array(values);
+}
+
+/**
+ * Embeds a text that will be STORED and retrieved (a chunk, a procedure), with
+ * taskType RETRIEVAL_DOCUMENT. embedText is the query side (RETRIEVAL_QUERY) and
+ * must not be used for stored text: Gemini embeds the two task types into
+ * different spaces. Until 2026-10-14 the inline auto-vectorize in ingest and
+ * crystallize called embedText, so ~2.6% of a production corpus was stored with
+ * query embeddings while the batch `vectorize` path used RETRIEVAL_DOCUMENT.
+ */
+export async function embedDocument(text: string): Promise<Float32Array> {
+  if (embedOverride) return embedOverride(text, undefined, "document");
+  const provider = activeEmbeddingProvider();
+  if (provider !== null) {
+    const vecs = await provider.embed([text]);
+    return vecs[0];
+  }
+  return new Float32Array(await geminiEmbed(text));
 }
 
 /**
