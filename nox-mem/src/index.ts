@@ -132,7 +132,7 @@ async function tombstonePath(arg: string): Promise<{ rel: string; onDisk: boolea
   const { existsSync } = await import("fs");
   const { resolve } = await import("path");
   const { resolveSourceArg } = await import("./lib/tombstone.js");
-  const ws = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+  const ws = (await import("./lib/workspace.js")).workspaceRoot();
   const rel = resolveSourceArg(getDb(), arg);
   return { rel, onDisk: existsSync(resolve(ws, rel)) };
 }
@@ -145,7 +145,7 @@ program
     const { tombstoneFile, tombstonePrefix } = await import("./lib/tombstone.js");
     const { existsSync } = await import("fs");
     const { resolve } = await import("path");
-    const ws = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+    const ws = (await import("./lib/workspace.js")).workspaceRoot();
     for (const f of files) {
       try {
         const { rel, onDisk } = await tombstonePath(f);
@@ -233,7 +233,7 @@ program
 
 program
   .command("reindex")
-  .description("Rebuild the index from $OPENCLAW_WORKSPACE/memory and /shared (refuses if that source is missing)")
+  .description("Rebuild the index from <workspace>/memory and /shared (workspace: $OPENCLAW_WORKSPACE, the OpenClaw layout, or ~/.nox-mem; refuses if that source is missing)")
   .option("--dry-run", "Print what would be reindexed as JSON; does not touch the DB")
   .action(async (opts: { dryRun?: boolean }) => {
     try {

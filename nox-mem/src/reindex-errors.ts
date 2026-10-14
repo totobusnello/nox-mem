@@ -43,9 +43,10 @@ export class ReindexSourceMissingError extends Error {
         (reason === "no-files"
           ? `found 0 files under ${roots.join(", ")} while the DB holds ${preCount} chunks. `
           : `no source directory exists (looked for ${roots.join(", ")}) while the DB holds ${preCount} chunks. `) +
-        `reindex rebuilds ONLY from $OPENCLAW_WORKSPACE/memory and $OPENCLAW_WORKSPACE/shared ` +
+        `reindex rebuilds ONLY from <workspace>/memory and <workspace>/shared, where the workspace is ` +
+        `$OPENCLAW_WORKSPACE, else /root/.openclaw/workspace if it exists, else ~/.nox-mem ` +
         `(OPENCLAW_WORKSPACE=${process.env.OPENCLAW_WORKSPACE ?? "<unset>"}); running it now would delete every chunk. ` +
-        `Standalone installs that add notes with \`nox-mem ingest <file>\` do not need reindex. ` +
+        `Notes added with \`nox-mem ingest <file>\` from elsewhere do not need reindex. ` +
         `Set NOX_REINDEX_ALLOW_WIPE=1 ONLY if emptying the DB is intended.`,
     );
     this.name = "ReindexSourceMissingError";

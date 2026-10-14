@@ -26,6 +26,7 @@
 
 import Database from "better-sqlite3";
 import { relative, resolve } from "path";
+import { workspaceRoot } from "./workspace.js";
 
 /**
  * The `source_file` key ingest writes for `path`: `relative(WORKSPACE, filePath)`
@@ -37,7 +38,7 @@ import { relative, resolve } from "path";
  * start with `../`; that is the key, not an error.
  */
 export function sourceKey(path: string): string {
-  return relative(process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace", resolve(path));
+  return relative(workspaceRoot(), resolve(path));
 }
 
 /**

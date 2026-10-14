@@ -13,8 +13,9 @@ import type Database from "better-sqlite3";
 import { relative } from "node:path";
 import { ingestFile, ingestMarkdownSync } from "../ingest.js";
 import { ingestEntityFile, ingestEntitySync } from "../ingest-entity.js";
+import { workspaceRoot } from "./workspace.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 export type IngestKind = "entity" | "markdown" | "graphify";
 

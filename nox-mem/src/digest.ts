@@ -3,9 +3,10 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
 import { getDb } from "./db.js";
+import { workspaceRoot } from "./lib/workspace.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 // Primary: Gemini 2.5 Flash (large context, free tier, handles 50k+ tokens)
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent";

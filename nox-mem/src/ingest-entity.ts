@@ -31,8 +31,9 @@ import { getInitialTier } from "./tier-manager.js";
 import { resolveRetention } from "./retention.js";
 import { inferPain, inferImportance } from "./salience.js";
 import { redact as _redactPrivacy } from "./privacy/filter.js";
+import { workspaceRoot } from "./lib/workspace.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 export interface EntityFrontmatter {
   name?: string;

@@ -1,5 +1,6 @@
 // reindex with NOX_DB_PATH set and OPENCLAW_WORKSPACE unset (2026-09-28).
-// Reindex then scans the default workspace (/root/.openclaw/workspace) and would
+// Reindex then scans the default workspace (/root/.openclaw/workspace, or
+// ~/.nox-mem on a standalone machine since 3.6.0) and would
 // treat every chunk of the NOX_DB_PATH database that did not come from there as
 // an orphan. The guard refuses unless the DB is that workspace's own DB.
 //
@@ -36,9 +37,14 @@ test("the mismatch is refused even for an empty DB (it is about identity, not da
   assert.throws(() => assertReindexSource(0), (e: Error) => e instanceof ReindexWorkspaceMismatchError);
 });
 
-test("NOX_DB_PATH pointing at the default workspace's own DB passes the identity check (origin crons)", () => {
+test("NOX_DB_PATH pointing at the default workspace's own DB passes the identity check (origin crons)", async () => {
+  // The default workspace's own DB: tools/nox-mem/nox-mem.db under the origin
+  // layout when this machine has it, else the standalone default (~/.nox-mem/nox.db).
+  const { workspaceRootWithSource } = await import("../lib/workspace.js");
+  const { DEFAULT_STANDALONE_DB_PATH } = await import("../lib/db-path.js");
+  const ws = workspaceRootWithSource();
   const saved = process.env.NOX_DB_PATH;
-  process.env.NOX_DB_PATH = "/root/.openclaw/workspace/tools/nox-mem/nox-mem.db";
+  process.env.NOX_DB_PATH = ws.source === "standalone" ? DEFAULT_STANDALONE_DB_PATH : join(ws.root, "tools", "nox-mem", "nox-mem.db");
   try {
     // Identity passes; on a machine without that workspace the SOURCE guard is what refuses.
     assert.throws(() => assertReindexSource(5), (e: Error) => !(e instanceof ReindexWorkspaceMismatchError) && e instanceof ReindexSourceMissingError);

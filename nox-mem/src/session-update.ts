@@ -5,8 +5,9 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { getDb } from "./db.js";
+import { workspaceRoot } from "./lib/workspace.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 export function updateSessionState(): void {
   const sessionPath = resolve(WORKSPACE, "memory", "SESSION-STATE.md");

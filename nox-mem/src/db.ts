@@ -1,10 +1,11 @@
 import Database from "better-sqlite3";
-import { resolve, dirname } from "path";
+import { resolve, dirname, relative } from "path";
 import { fileURLToPath } from "url";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 // @ts-ignore - sqlite-vec ships no type declarations for this helper
 import { getLoadablePath as vecLoadablePath } from "sqlite-vec";
 import { resolveDbPathWithSource, isInsideNodeModules, ensureDbParentDir } from "./lib/db-path.js";
+import { ORIGIN_WORKSPACE, workspaceRootWithSource } from "./lib/workspace.js";
 
 let _warnedNodeModules = false;
 
@@ -231,6 +232,64 @@ function migrateToV20(db: Database.Database): void {
   // Per-column try/catch keeps this idempotent on DBs patched out of band.
   try { db.exec(`ALTER TABLE search_telemetry ADD COLUMN requesting_agent TEXT`); } catch {}
   try { db.exec(`ALTER TABLE search_telemetry ADD COLUMN was_temporal_query INTEGER DEFAULT 0`); } catch {}
+  migrateStandaloneKeys(db);
+}
+
+/**
+ * v20 — standalone `source_file` keys move to the standalone workspace root.
+ *
+ * Up to 3.5.x a standalone install keyed files relative to
+ * /root/.openclaw/workspace, a directory it does not have
+ * (`../../../home/u/.nox-mem/memory/a.md`). 3.6.0 keys them relative to
+ * ~/.nox-mem (`memory/a.md`; `../notes/a.md` for a file elsewhere in $HOME).
+ * Without rewriting, the next ingest of the same file would write a second copy
+ * under the new key.
+ *
+ * Runs only when the root resolves to "standalone" (no $OPENCLAW_WORKSPACE, no
+ * /root/.openclaw/workspace): that is exactly the case where 3.5.x used the
+ * origin default as the base, so `resolve(ORIGIN_WORKSPACE, key)` recovers the
+ * absolute path. Only `../` keys are touched; nothing else can have come from
+ * that base on such a machine.
+ *
+ * Exported so the test can run it on a crafted DB. A copy of the DB is written
+ * first (`<db>.pre-v20-keys.bak`). The rewrite and a `meta` marker commit in one
+ * transaction, so a crash cannot apply the conversion twice.
+ */
+/** `meta` row that marks the v20 standalone rebase as done. */
+export const STANDALONE_REBASE_MARKER = "standalone-rebase-v20";
+
+export function migrateStandaloneKeys(db: Database.Database, ws = workspaceRootWithSource()): number {
+  if (ws.source !== "standalone") return 0;
+  const done = db.prepare("SELECT 1 FROM meta WHERE key = ?").get(STANDALONE_REBASE_MARKER);
+  if (done) return 0;
+  const tables = ["chunks", "consolidated_files"].filter(
+    (t) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t),
+  );
+  const keys = new Set<string>();
+  for (const t of tables) {
+    for (const r of db.prepare(`SELECT DISTINCT source_file FROM ${t} WHERE source_file LIKE '../%'`).all() as Array<{ source_file: string }>) {
+      keys.add(r.source_file);
+    }
+  }
+  const markStmt = db.prepare("INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES (?, ?, datetime('now'))");
+  const mark = (n: string) => markStmt.run(STANDALONE_REBASE_MARKER, n);
+  if (keys.size === 0) {
+    mark("0");
+    return 0;
+  }
+  if (db.name && db.name !== ":memory:") {
+    const bak = `${db.name}.pre-v20-keys.bak`;
+    if (!existsSync(bak)) db.exec(`VACUUM INTO '${bak.replace(/'/g, "''")}'`);
+  }
+  db.transaction(() => {
+    for (const old of keys) {
+      const next = relative(ws.root, resolve(ORIGIN_WORKSPACE, old));
+      for (const t of tables) db.prepare(`UPDATE OR IGNORE ${t} SET source_file = ? WHERE source_file = ?`).run(next, old);
+    }
+    mark(String(keys.size));
+  })();
+  console.error(`[nox-mem] schema v20: ${keys.size} file keys rebased onto ${ws.root} (backup: ${db.name}.pre-v20-keys.bak)`);
+  return keys.size;
 }
 
 function migrateToV9(db: Database.Database): void {

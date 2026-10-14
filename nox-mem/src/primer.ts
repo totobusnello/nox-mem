@@ -1,8 +1,9 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { getDb } from "./db.js";
+import { workspaceRoot } from "./lib/workspace.js";
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
+const WORKSPACE = workspaceRoot();
 
 /**
  * Extract a clean summary line from a decision chunk.
