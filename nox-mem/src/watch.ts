@@ -173,7 +173,9 @@ export function startWatch(verbose = false): void {
           let isDir = false;
           try { isDir = statSync(filepath).isDirectory(); } catch {}
           if (isDir) walkFiles(filepath).forEach(debounceIngest);
-          else if (!existsSync(filepath) && extname(filepath) === "") debounceTombstoneDir(filepath);
+          // (no extname test: a directory may be named `projeto.v1`; a path that
+          // was never a directory simply matches nothing under its prefix)
+          else if (!existsSync(filepath)) debounceTombstoneDir(filepath);
           return;
         }
         debounceIngest(filepath);

@@ -221,6 +221,8 @@ export function syncFileChunks(
       if (theirs && theirs.length > 0) {
         const row = theirs.shift()!;
         adopt.run(relPath, d.retention_days, row.id);
+        // explicit values land on adopted rows too, not only on kept ones (Codex, #56 r2)
+        setRefreshed?.run({ id: row.id, pain: d.pain, metadata: d.metadata, importance: d.importance });
         adoptedFrom.add(row.source_file);
         ids.push(row.id);
         adopted++;

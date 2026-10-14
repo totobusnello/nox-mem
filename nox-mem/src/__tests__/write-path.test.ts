@@ -316,3 +316,17 @@ test("Kimi: a tombstoned file restored to disk (not yet re-ingested) is not adop
   assert.equal(r.adopted, 0);
   assert.equal(rows("memory/back.md")[0]!.id, id);
 });
+
+test("Codex r2: explicit values land on ADOPTED rows too", async () => {
+  const { syncFileChunks } = await import("../lib/chunk-sync.js");
+  const db = getDb();
+  const base = { section: "compiled", chunk_type: "lesson", source_date: null, tier: "working", importance: 0.9, retention_days: 180, section_boost: 2 };
+  const first = syncFileChunks(db, "memory/entities/lessons/ep-old.md", [{ ...base, chunk_text: "adopted text", pain: 0.2, metadata: "{}" }]);
+  tombstoneFile(db, "memory/entities/lessons/ep-old.md", false, "deleted");
+  const r = syncFileChunks(db, "memory/entities/lessons/ep-new.md",
+    [{ ...base, chunk_text: "adopted text", pain: 1.0, metadata: "{\"p2\":1}" }],
+    { refreshKept: { pain: true, metadata: true } });
+  assert.deepEqual([r.adopted, r.ids[0]], [1, first.ids[0]]);
+  const row = db.prepare("SELECT pain, metadata FROM chunks WHERE id = ?").get(first.ids[0]) as { pain: number; metadata: string };
+  assert.deepEqual([row.pain, row.metadata], [1.0, "{\"p2\":1}"]);
+});
