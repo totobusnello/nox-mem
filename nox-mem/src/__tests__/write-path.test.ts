@@ -7,7 +7,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, unlinkSync, writeFileSync, renameSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync, renameSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -23,7 +23,7 @@ for (const k of ["GEMINI_API_KEY", "OPENAI_API_KEY", "NOX_EMBEDDING_API_KEY", "N
 process.env.OPENCLAW_WORKSPACE = WS;
 
 let getDb: any, closeDb: any, routeIngest: any;
-let tombstoneFile: any, listTombstones: any, keepTombstone: any, purgeTombstone: any;
+let tombstoneFile: any, listTombstones: any, keepTombstone: any, purgeTombstone: any, sourceKey: any;
 
 const rows = (rel: string) =>
   getDb().prepare("SELECT id, chunk_text, section FROM chunks WHERE source_file = ? ORDER BY id").all(rel) as Array<{
@@ -40,7 +40,7 @@ const doc = (n: number, edits: Record<number, string> = {}) =>
 before(async () => {
   ({ getDb, closeDb } = await import("../db.js"));
   ({ routeIngest } = await import("../lib/ingest-router.js"));
-  ({ tombstoneFile, listTombstones, keepTombstone, purgeTombstone } = await import("../lib/tombstone.js"));
+  ({ tombstoneFile, listTombstones, keepTombstone, purgeTombstone, sourceKey } = await import("../lib/tombstone.js"));
   getDb().exec("CREATE TABLE IF NOT EXISTS vec_chunk_map (vec_rowid INTEGER PRIMARY KEY, chunk_id INTEGER NOT NULL UNIQUE)");
 });
 
@@ -329,4 +329,40 @@ test("Codex r2: explicit values land on ADOPTED rows too", async () => {
   assert.deepEqual([r.adopted, r.ids[0]], [1, first.ids[0]]);
   const row = db.prepare("SELECT pain, metadata FROM chunks WHERE id = ?").get(first.ids[0]) as { pain: number; metadata: string };
   assert.deepEqual([row.pain, row.metadata], [1.0, "{\"p2\":1}"]);
+});
+
+test("sourceKey lands on the key ingest wrote — relative or absolute, inside or outside the workspace", async () => {
+  // Standalone install: the notes live outside OPENCLAW_WORKSPACE, so keys start with `../`.
+  // The CLI kept a relative argument as typed and refused `../` keys: `tombstone notes/x.md`
+  // missed the chunks and an absolute path was rejected (found in the 3.6.0 tarball smoke).
+  const notes = join(TMP_ROOT, "notes");
+  mkdirSync(notes, { recursive: true });
+  writeFileSync(join(notes, "x.md"), doc(2));
+  const cwd = process.cwd();
+  try {
+    process.chdir(TMP_ROOT);
+    await routeIngest("notes/x.md");
+    const stored = getDb().prepare("SELECT DISTINCT source_file FROM chunks WHERE source_file LIKE '%notes/x.md'").all() as Array<{ source_file: string }>;
+    assert.equal(stored.length, 1);
+    const key = stored[0]!.source_file;
+    assert.ok(key.startsWith("../"), key);
+    assert.equal(sourceKey("notes/x.md"), key);
+    assert.equal(sourceKey(join(notes, "x.md")), key);
+    assert.equal(sourceKey(join(MEM, "a.md")), "memory/a.md");
+
+    const ids = rows(key).map((r) => r.id);
+    renameSync(join(notes, "x.md"), join(notes, "y.md"));
+    assert.equal(tombstoneFile(getDb(), sourceKey("notes/x.md"), false, "deleted").status, "tombstoned");
+    await routeIngest("notes/y.md");
+    assert.deepEqual(rows(sourceKey("notes/y.md")).map((r) => r.id), ids, "rename outside the workspace lost the ids");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test("every tombstone CLI command resolves its path through sourceKey", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "..", "src", "index.ts"), "utf8");
+  const fn = src.slice(src.indexOf("async function tombstonePath"), src.indexOf("program", src.indexOf("async function tombstonePath")));
+  assert.ok(fn.includes("sourceKey(arg)"), fn);
+  assert.ok(!fn.includes('startsWith("..")'), "tombstonePath refuses keys outside the workspace again");
 });

@@ -25,6 +25,20 @@
 // differently, and a CREATE TABLE IF NOT EXISTS lands the same on both.
 
 import Database from "better-sqlite3";
+import { relative, resolve } from "path";
+
+/**
+ * The `source_file` key ingest writes for `path`: `relative(WORKSPACE, filePath)`
+ * in ingest.ts and ingest-router.ts, where `relative()` resolves a relative
+ * argument against the cwd. Every command that names a file by path has to land
+ * on this same key, or it silently misses the chunks.
+ *
+ * On a standalone install nothing lives under the default workspace, so keys
+ * start with `../`; that is the key, not an error.
+ */
+export function sourceKey(path: string): string {
+  return relative(process.env.OPENCLAW_WORKSPACE || "/root/.openclaw/workspace", resolve(path));
+}
 
 export type TombstoneReason = "deleted" | "missing-at-reindex";
 
