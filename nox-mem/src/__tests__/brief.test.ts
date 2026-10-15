@@ -364,3 +364,42 @@ test("handle: format=text retorna text/plain pronto pra hook", () => {
   assert.equal(out.status, 200);
   assert.ok("text" in out && out.text.startsWith("# nox-mem brief — scope=global agent=cipher"));
 });
+
+// ─── título de itens distilled (2026-10-15) ──────────────────────────────────
+// O título era o basename do source_file ("lex:d12d3a69-…"), o id da sessão: ~45 caracteres sem
+// informação. Passa a ser "sessão <agente> <data>". Só renderização: dedup e diversidade continuam
+// usando o basename, então a seleção não muda.
+
+const UUID_A = "d12d3a69-2579-4bcf-8fdd-e21e31dec4be";
+const UUID_B = "54091067-ebe0-4175-ae61-ba24d939272e";
+
+function distilledFixture(db: BriefDb): void {
+  seed(db, [
+    { source_file: `sessions/lex/lex:${UUID_A}`, chunk_type: "distilled", source_date: "2026-06-01",
+      chunk_text: "[lesson|lex] entregue" },
+    // mesma data, mesmo texto curto, outra sessão: hoje os dois entram (a chave de dedup carrega o uuid);
+    // se o título novo vazasse para dedup/diversidade, um deles cairia.
+    { source_file: `sessions/lex/lex:${UUID_B}`, chunk_type: "distilled", source_date: "2026-06-01",
+      chunk_text: "[lesson|lex] entregue" },
+    { source_file: "memory/lessons.md", chunk_type: "lesson", source_date: "2026-05-30",
+      chunk_text: "SQLite com múltiplos writers exige coordenação" },
+  ]);
+}
+
+test("brief: item distilled leva título 'sessão <agente> <data>', não o id da sessão", () => {
+  const db = makeDb();
+  distilledFixture(db);
+  const r = buildBrief(db, { scope: "global", n: 10, format: "json" }, NOW);
+  const titles = r.items.map((i) => i.title);
+  assert.ok(titles.every((t) => !t.includes(UUID_A) && !t.includes(UUID_B)), titles.join(" | "));
+  assert.ok(titles.includes("sessão lex 2026-06-01"), titles.join(" | "));
+  assert.ok(titles.includes("lessons"), "outros tipos mantêm o basename");
+});
+
+test("brief: o título novo não muda quais itens são selecionados", () => {
+  const db = makeDb();
+  distilledFixture(db);
+  const r = buildBrief(db, { scope: "global", n: 10, format: "json" }, NOW);
+  assert.deepEqual(r.items.map((i) => i.id).sort((a, b) => a - b), PINNED_DISTILLED_IDS);
+});
+const PINNED_DISTILLED_IDS: number[] = [1, 2, 3];

@@ -233,6 +233,20 @@ export function titleFromSourceFile(sourceFile: string | null | undefined): stri
   return base.replace(/\.(md|txt|json|jsonl)$/i, "");
 }
 
+/**
+ * Título exibido (2026-10-15). Itens distilled têm source_file "sessions/<agente>/<agente>:<uuid>", e o
+ * basename era só o id da sessão. Exibe "sessão <agente> <data>". Só renderização: dedup e diversidade
+ * continuam com titleFromSourceFile, então a seleção não muda.
+ */
+const SESSION_TITLE = /^([a-z0-9_-]+):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function displayTitle(title: string, chunkType: string | null, contentDate: string | null): string {
+  if (chunkType !== "distilled") return title;
+  const m = SESSION_TITLE.exec(title);
+  if (!m) return title;
+  return contentDate ? `sessão ${m[1]} ${contentDate.slice(0, 10)}` : `sessão ${m[1]}`;
+}
+
 // ─── brief_log (única escrita do endpoint — schema próprio, zero ALTER) ─────
 
 let briefLogReady = false;
@@ -435,7 +449,7 @@ function toItems(picked: Picked[], nowMs: number): BriefItem[] {
       : 0;
     return {
       id: row.id,
-      title,
+      title: displayTitle(title, row.chunk_type, ref ?? null),
       one_liner: oneLiner,
       type: row.chunk_type,
       pain: row.pain ?? 0.2,
