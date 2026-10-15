@@ -39,6 +39,50 @@ export function extractDate(relPath: string): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * Hard ceiling on a chunk, in characters (2026-10-15). The word-count split below never fires on text
+ * with few spaces or no blank lines (CSV rows, OCR output), which left chunks of up to 1 MB; the embedding
+ * model reads ~2,048 tokens. Production text measured 1.6-3.9 chars/token, so 4,000 chars stays near
+ * 2,048 tokens even for CSV, and sits above the ~3-3.5 KB of a 500-word prose chunk.
+ */
+export const MAX_CHUNK_CHARS = 4000;
+
+/**
+ * Splits a text over `max` characters: lines are packed up to the cap; a line longer than the cap is cut
+ * at the last space inside its window, or hard-cut when the window has none. Only whitespace at the cuts
+ * is dropped.
+ */
+export function capChunk(text: string, max: number = MAX_CHUNK_CHARS): string[] {
+  if (text.length <= max) return [text];
+  const out: string[] = [];
+  let buf = "";
+  const flush = () => {
+    if (buf.trim()) out.push(buf.trim());
+    buf = "";
+  };
+  for (const line of text.split("\n")) {
+    let rest = line;
+    // A line that fits on its own is never split: it starts a new chunk when the current one is full.
+    if (buf && buf.length + 1 + rest.length > max && rest.length <= max) flush();
+    // A line over the cap fills the current chunk first (so a heading stays with its text), then the next.
+    while ((buf ? buf.length + 1 : 0) + rest.length > max) {
+      const room = max - (buf ? buf.length + 1 : 0);
+      if (room < max / 4) {
+        flush();
+        continue;
+      }
+      let cut = rest.lastIndexOf(" ", room);
+      if (cut < room / 2) cut = room;
+      buf = buf ? `${buf}\n${rest.slice(0, cut)}` : rest.slice(0, cut);
+      flush();
+      rest = rest.slice(cut);
+    }
+    buf = buf ? `${buf}\n${rest}` : rest;
+  }
+  flush();
+  return out;
+}
+
 export function chunkMarkdown(content: string): string[] {
   const lines = content.split("\n");
   const chunks: string[] = [];
@@ -77,13 +121,13 @@ export function chunkMarkdown(content: string): string[] {
       result.push(chunk);
     }
   }
-  return result.filter((c) => c.trim().length > 0);
+  return result.filter((c) => c.trim().length > 0).flatMap((c) => capChunk(c));
 }
 
 export function chunkJson(content: string): string[] {
   try {
     const data = JSON.parse(content);
-    if (Array.isArray(data)) return data.map((item) => JSON.stringify(item, null, 2));
+    if (Array.isArray(data)) return data.map((item) => JSON.stringify(item, null, 2)).flatMap((c) => capChunk(c));
     const chunks: string[] = [];
     for (const [key, value] of Object.entries(data)) {
       if (Array.isArray(value)) {
@@ -92,9 +136,9 @@ export function chunkJson(content: string): string[] {
         chunks.push(`${key}: ${JSON.stringify(value)}`);
       }
     }
-    return chunks.length > 0 ? chunks : [content];
+    return (chunks.length > 0 ? chunks : [content]).flatMap((c) => capChunk(c));
   } catch {
-    return [content];
+    return capChunk(content);
   }
 }
 
