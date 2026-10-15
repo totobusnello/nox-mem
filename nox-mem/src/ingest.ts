@@ -3,6 +3,7 @@ import { relative, resolve } from "path";
 import Database from "better-sqlite3";
 import { getDb } from "./db.js";
 import { syncFileChunks, type DesiredChunk } from "./lib/chunk-sync.js";
+import { ensureTombstoneTable, resolveTombstoneOnIngest } from "./lib/tombstone.js";
 import { getInitialTier, getInitialImportance } from "./tier-manager.js";
 import { resolveRetention } from "./retention.js";
 import { inferPain, inferImportance } from "./salience.js";
@@ -129,13 +130,18 @@ const EMPTY: IngestFileResult = { chunks: 0, inserted: [], kept: 0, deleted: 0, 
 /**
  * Synchronous core: read, redact, chunk, and diff into the DB (chunk-sync.ts).
  * No await inside, so a caller can run many files in one transaction (reindex).
- * An empty file changes nothing — it is not read as "delete every chunk".
+ * An empty file changes no chunk — it is not read as "delete every chunk". It is, however, a file on
+ * disk again, so a tombstone left when it was deleted is resolved (2026-10-15).
  */
 export function ingestMarkdownSync(db: Database.Database, filePath: string): IngestFileResult {
   const relPath = relative(WORKSPACE, filePath);
   // A2 (2026-04-25): entity routing lives in lib/ingest-router.ts — single dispatch.
   let content = readFileSync(filePath, "utf-8");
-  if (!content.trim()) return EMPTY;
+  if (!content.trim()) {
+    ensureTombstoneTable(db);
+    resolveTombstoneOnIngest(db, relPath, []);
+    return EMPTY;
+  }
 
   // Sanitize UTF-8
   content = sanitizeUtf8(content);
