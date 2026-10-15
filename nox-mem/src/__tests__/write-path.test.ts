@@ -23,7 +23,7 @@ for (const k of ["GEMINI_API_KEY", "OPENAI_API_KEY", "NOX_EMBEDDING_API_KEY", "N
 process.env.OPENCLAW_WORKSPACE = WS;
 
 let getDb: any, closeDb: any, routeIngest: any;
-let tombstoneFile: any, listTombstones: any, keepTombstone: any, purgeTombstone: any, sourceKey: any, resolveSourceArg: any;
+let tombstoneFile: any, listTombstones: any, LIST_TOMBSTONES_SQL: any, keepTombstone: any, purgeTombstone: any, sourceKey: any, resolveSourceArg: any;
 
 const rows = (rel: string) =>
   getDb().prepare("SELECT id, chunk_text, section FROM chunks WHERE source_file = ? ORDER BY id").all(rel) as Array<{
@@ -40,7 +40,7 @@ const doc = (n: number, edits: Record<number, string> = {}) =>
 before(async () => {
   ({ getDb, closeDb } = await import("../db.js"));
   ({ routeIngest } = await import("../lib/ingest-router.js"));
-  ({ tombstoneFile, listTombstones, keepTombstone, purgeTombstone, sourceKey, resolveSourceArg } = await import("../lib/tombstone.js"));
+  ({ tombstoneFile, listTombstones, LIST_TOMBSTONES_SQL, keepTombstone, purgeTombstone, sourceKey, resolveSourceArg } = await import("../lib/tombstone.js"));
   getDb().exec("CREATE TABLE IF NOT EXISTS vec_chunk_map (vec_rowid INTEGER PRIMARY KEY, chunk_id INTEGER NOT NULL UNIQUE)");
 });
 
@@ -258,6 +258,29 @@ test("Codex#1: a whole file inside a bigger new one (rename + additions) is adop
   const r = await routeIngest(join(MEM, "new2.md"));
   assert.deepEqual([r.adopted, r.inserted.length], [1, 1]);
   assert.ok(rows("memory/new2.md").some((x) => x.id === id));
+});
+
+test("(b) duplicated_elsewhere counts a tombstoned chunk whose text is stored under another path, not repeats inside the file", async () => {
+  // dupsrc: sections 7, 8, 8 (one copy of 7 also in dupother; 8 repeats only inside dupsrc)
+  const src = [SECTION(7, " dupshared"), SECTION(8, " duponly"), SECTION(8, " duponly")].join("\n\n");
+  writeFileSync(join(MEM, "dupsrc.md"), src);
+  writeFileSync(join(MEM, "dupother.md"), SECTION(7, " dupshared"));
+  await routeIngest(join(MEM, "dupsrc.md"));
+  await routeIngest(join(MEM, "dupother.md"));
+  unlinkSync(join(MEM, "dupsrc.md"));
+  tombstoneFile(getDb(), "memory/dupsrc.md", false, "deleted");
+  const t = listTombstones(getDb()).find((r: any) => r.source_file === "memory/dupsrc.md");
+  assert.equal(t.live_chunks, 3);
+  assert.equal(t.duplicated_elsewhere, 1);
+  writeFileSync(join(MEM, "dupsrc.md"), src);
+  await routeIngest(join(MEM, "dupsrc.md"));
+});
+
+test("(b) listTombstones has no correlated subquery (measured 2026-10-15: 8.5 min on 52.9k chunks, 20 tombstones)", () => {
+  // The correlated EXISTS on chunk_text made SQLite build an automatic index over every chunk inside a
+  // per-row subquery. The single-pass version builds its lookups once per statement.
+  const plan = getDb().prepare(`EXPLAIN QUERY PLAN ${LIST_TOMBSTONES_SQL}`).all().map((r: any) => r.detail).join("\n");
+  assert.doesNotMatch(plan, /CORRELATED/, plan);
 });
 
 test("Codex#2: a file tombstoned by reindex (missing-at-reindex) is never adopted", async () => {
