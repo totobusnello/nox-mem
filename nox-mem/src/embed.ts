@@ -51,6 +51,14 @@ const EMBEDDING_DIM = 3072; // gemini-embedding-001 actual output dimension
 const BATCH_SIZE = 20; // Gemini free tier: up to 100 req/min
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
+/**
+ * Payload guard for an embedding request, in CHARACTERS (2026-10-15). gemini-embedding-001 reads up to
+ * 2,048 TOKENS and truncates longer input itself; the client used to cut at 2,048 characters, which kept
+ * 44% of the corpus text out of every vector. Measured on production chunks: 1.6 to 3.9 chars/token, so
+ * 10,000 chars always carries at least the 2,048 tokens the model reads.
+ */
+export const EMBED_MAX_CHARS = 10_000;
+
 // ─── Gemini Embedding API ────────────────────────────────────────────────────
 
 // Forensic-logged fetch with exponential backoff on 429/5xx.
@@ -99,7 +107,7 @@ async function geminiEmbed(text: string): Promise<number[]> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: `models/${EMBEDDING_MODEL}`,
-      content: { parts: [{ text: text.substring(0, 2048) }] },
+      content: { parts: [{ text: text.substring(0, EMBED_MAX_CHARS) }] },
       taskType: "RETRIEVAL_DOCUMENT",
     }),
   }, "embedDoc");
@@ -120,7 +128,7 @@ async function geminiEmbedQuery(text: string, signal?: AbortSignal): Promise<num
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: `models/${EMBEDDING_MODEL}`,
-      content: { parts: [{ text: text.substring(0, 2048) }] },
+      content: { parts: [{ text: text.substring(0, EMBED_MAX_CHARS) }] },
       taskType: "RETRIEVAL_QUERY",
     }),
   }, "embedQuery");
@@ -291,7 +299,7 @@ export async function embedBatchAPI(
     const payload = {
       requests: slice.map((t) => ({
         model: `models/${EMBEDDING_MODEL}`,
-        content: { parts: [{ text: t.substring(0, 2048) }] },
+        content: { parts: [{ text: t.substring(0, EMBED_MAX_CHARS) }] },
         taskType: "RETRIEVAL_DOCUMENT",
       })),
     };
