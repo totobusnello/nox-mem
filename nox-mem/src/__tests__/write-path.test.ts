@@ -165,6 +165,19 @@ test("(b) the file coming back removes its tombstone and keeps the ids", async (
   assert.equal(listTombstones(getDb(), { all: true }).some((t: any) => t.source_file === "memory/gone.md"), false);
 });
 
+test("(b) a file that comes back EMPTY also removes its tombstone (and keeps its chunks)", async () => {
+  writeFileSync(join(MEM, "blank.md"), doc(2));
+  await routeIngest(join(MEM, "blank.md"));
+  const before = rows("memory/blank.md");
+  unlinkSync(join(MEM, "blank.md"));
+  assert.equal(tombstoneFile(getDb(), "memory/blank.md", false, "deleted").status, "tombstoned");
+  writeFileSync(join(MEM, "blank.md"), "  \n");
+  await routeIngest(join(MEM, "blank.md"));
+  assert.deepEqual(rows("memory/blank.md"), before, "an empty file still changes no chunk");
+  assert.equal(listTombstones(getDb(), { all: true }).some((t: any) => t.source_file === "memory/blank.md"), false,
+    "file is back on disk: the tombstone must go");
+});
+
 test("(b) rename: the new path adopts the tombstoned rows (same ids), tombstone records renamed_to", async () => {
   const before = rows("memory/gone.md").map((x) => x.id);
   renameSync(join(MEM, "gone.md"), join(MEM, "moved.md"));
