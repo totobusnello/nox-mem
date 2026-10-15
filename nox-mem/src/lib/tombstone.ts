@@ -141,21 +141,32 @@ export interface TombstoneRow {
 }
 
 /** Default: tombstones that still hold chunks and were not reviewed as kept. */
+/**
+ * One pass, no correlated subquery (2026-10-15). The previous form ran a correlated EXISTS on chunk_text
+ * per tombstoned chunk; SQLite answered it with an automatic index over every chunk, and it took 8.5 min
+ * on 52.9k chunks with 20 tombstones. A tombstoned chunk is "duplicated elsewhere" when its text is
+ * stored under more than one path (its own is one of them), the same predicate as before.
+ */
+export const LIST_TOMBSTONES_SQL = `WITH tc AS (
+         SELECT c.source_file, c.chunk_text FROM chunks c JOIN chunk_tombstones t ON t.source_file = c.source_file
+       ),
+       shared AS (
+         SELECT o.chunk_text FROM chunks o
+          WHERE o.chunk_text IN (SELECT chunk_text FROM tc)
+          GROUP BY o.chunk_text HAVING COUNT(DISTINCT o.source_file) > 1
+       ),
+       agg AS (
+         SELECT source_file, COUNT(*) AS live_chunks,
+                SUM(chunk_text IN (SELECT chunk_text FROM shared)) AS duplicated_elsewhere
+           FROM tc GROUP BY source_file
+       )
+       SELECT t.*, COALESCE(a.live_chunks, 0) AS live_chunks, COALESCE(a.duplicated_elsewhere, 0) AS duplicated_elsewhere
+         FROM chunk_tombstones t LEFT JOIN agg a ON a.source_file = t.source_file
+        ORDER BY t.tombstoned_at, t.source_file`;
+
 export function listTombstones(db: Database.Database, opts: { all?: boolean } = {}): TombstoneRow[] {
   ensureTombstoneTable(db);
-  const rows = db
-    .prepare(
-      `SELECT t.*,
-              (SELECT COUNT(*) FROM chunks c WHERE c.source_file = t.source_file) AS live_chunks,
-              (SELECT COUNT(*) FROM chunks c
-                WHERE c.source_file = t.source_file
-                  AND EXISTS (SELECT 1 FROM chunks o
-                               WHERE o.chunk_text = c.chunk_text AND o.source_file != c.source_file)
-              ) AS duplicated_elsewhere
-         FROM chunk_tombstones t
-        ORDER BY t.tombstoned_at, t.source_file`,
-    )
-    .all() as TombstoneRow[];
+  const rows = db.prepare(LIST_TOMBSTONES_SQL).all() as TombstoneRow[];
   return opts.all ? rows : rows.filter((r) => r.live_chunks > 0 && r.kept_at === null);
 }
 
