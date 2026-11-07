@@ -3,6 +3,7 @@
  * nox-mem MCP Server — exposes memory tools via Model Context Protocol (stdio)
  * Tools: search, stats, primer, ingest, answer, ... (see TOOLS below)
  */
+import "./lib/stdout-guard.js"; // must stay the first import: stdout is JSON-RPC only
 import { getDb, closeDb } from "./db.js";
 import { searchHybrid, formatResultsForAgent } from "./search.js";
 import { crossSearch, formatCrossResults, getCrossStats } from "./cross-search.js";
