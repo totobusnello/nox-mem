@@ -869,6 +869,41 @@ export function formatResults(results: SearchResult[]): string {
     .join("\n\n");
 }
 
+/**
+ * Formatter for agents (MCP). `formatResults` shows 200 characters per hit, which is a preview
+ * for a person at a terminal who can open the file. An agent usually cannot open it (the files
+ * live on the memory host, or its permissions forbid it), so it saw the opening of the right
+ * chunk and never the fact further down: measured 2026-11-06, 10 of 36 tasks answered when the
+ * agent was told to search, and 25 of 40 runs tried to read the file the preview came from.
+ *
+ * Each hit carries its chunk id and its whole text (chunks are capped at MAX_CHUNK_CHARS at
+ * ingest). A total budget keeps a 20-hit search bounded: a hit past the budget keeps at least
+ * MIN_PER_HIT characters and says how to get the rest (`nox_mem_get`), so a cut is never silent.
+ */
+export const AGENT_OUTPUT_BUDGET_CHARS = 24_000;
+const MIN_PER_HIT = 400;
+
+export function formatResultsForAgent(results: SearchResult[], budget: number = AGENT_OUTPUT_BUDGET_CHARS): string {
+  if (results.length === 0) return "No results found.";
+  let used = 0;
+  return results
+    .map((r, i) => {
+      const tag = r.match_type ? ` [${r.match_type}]` : "";
+      const idPart = r.id != null ? ` · chunk ${r.id}` : "";
+      const datePart = r.source_date ? ` · ${r.source_date}` : "";
+      const head = `#${i + 1} [${r.score}${tag}] ${r.source_file}${idPart}${datePart}`;
+      const room = Math.max(MIN_PER_HIT, budget - used);
+      let body = r.chunk_text;
+      if (body.length > room) {
+        const how = r.id != null ? `nox_mem_get with id ${r.id}` : "open the source file";
+        body = `${body.slice(0, room)}\n[cut at ${room} of ${r.chunk_text.length} characters: ${how} returns the rest]`;
+      }
+      used += body.length;
+      return `${head}\n${body}`;
+    })
+    .join("\n\n---\n\n");
+}
+
 // ─── Test-only exports (named with _ prefix to signal "do not use externally") ─
 
 export const _internals = {

@@ -80,7 +80,7 @@ Pick your interface — same engine, one SQLite file behind all three:
 | Interface | Entry point | Best for |
 |---|---|---|
 | **CLI** | `nox-mem <cmd>` | humans, scripts, cron |
-| **MCP server** | `nox-mem-mcp` | **agents** (OpenClaw, Hermes, Claude Code) — 21 tools |
+| **MCP server** | `nox-mem-mcp` | **agents** (OpenClaw, Hermes, Claude Code) — 22 tools |
 | **HTTP API** | `nox-mem-api` | services, dashboards, remote agents |
 
 **Prerequisites (Linux / macOS):** Node 20+. `build-essential` and `python3` only matter if `better-sqlite3` cannot download a prebuilt binary for your platform and has to compile (`inotify-tools` is not needed).
@@ -186,7 +186,7 @@ nox-mem stats | grep -q "Chunks:" || { echo "schema init failed"; exit 1; }
 command -v nox-mem-mcp || { echo "nox-mem-mcp not on PATH"; exit 1; }
 ```
 
-**2. Wire it as an MCP server** (recommended) — 21 tools (`nox_mem_search`, `nox_mem_answer`, `nox_mem_ingest`, `nox_mem_primer`, `nox_mem_reflect`, `nox_mem_kg_query`, `nox_mem_decision_*`, `nox_mem_cross_search`, …). Add to your agent's MCP config (Claude Code `.mcp.json`, OpenClaw/Hermes equivalent):
+**2. Wire it as an MCP server** (recommended) — 22 tools (`nox_mem_search`, `nox_mem_get`, `nox_mem_answer`, `nox_mem_ingest`, `nox_mem_primer`, `nox_mem_reflect`, `nox_mem_kg_query`, `nox_mem_decision_*`, `nox_mem_cross_search`, …). Add to your agent's MCP config (Claude Code `.mcp.json`, OpenClaw/Hermes equivalent):
 
 ```json
 {
@@ -206,7 +206,7 @@ Or in one line for Claude Code: `claude mcp add nox-mem -e GEMINI_API_KEY="$GEMI
 
 Temporal filters work on every surface: `nox_mem_search` and `nox_mem_answer` take `as_of` / `changed_since` (on the CLI, `--as-of` / `--changed-since`; over HTTP, `?as_of=` / `?changed_since=` on `/api/search` and the same keys in the `POST /api/answer` body). A bad or blank date gives exit 2 / HTTP 400 / MCP `isError`.
 
-The agent calls `nox_mem_search` to recall and `nox_mem_ingest` to store. Run `nox_mem_primer` at session start for context recovery. Reusable agent profiles (`assistente-pessoal`, `financeiro`, `pesquisador`) live in [`perfis/`](./perfis); generic SOUL/HEARTBEAT/IDENTITY templates in [`templates/`](./templates).
+The agent calls `nox_mem_search` to recall and `nox_mem_ingest` to store. Over MCP each search hit comes with its chunk id and whole text (up to 24,000 characters per call; a hit cut by that budget says so, and `nox_mem_get` returns it whole). The CLI keeps its 200-character preview. Run `nox_mem_primer` at session start for context recovery. Reusable agent profiles (`assistente-pessoal`, `financeiro`, `pesquisador`) live in [`perfis/`](./perfis); generic SOUL/HEARTBEAT/IDENTITY templates in [`templates/`](./templates).
 
 **3. Or wire it as an HTTP API**
 

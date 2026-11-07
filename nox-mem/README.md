@@ -249,7 +249,7 @@ nox-mem stats              — chunk/entity/vector counts
 nox-mem kg-build           — extract knowledge graph entities
 nox-mem reflect "question" — synthesis over memory + KG, with cited sources
 nox-mem-api                — start HTTP API on $NOX_API_PORT (default 18802)
-nox-mem-mcp                — start MCP server over stdio (21 tools, incl. nox_mem_answer, for agents)
+nox-mem-mcp                — start MCP server over stdio (22 tools, incl. nox_mem_answer and nox_mem_get, for agents)
 nox-mem doctor             — health check (core + optional integrations)
 nox-mem --help             — full command reference
 ```
