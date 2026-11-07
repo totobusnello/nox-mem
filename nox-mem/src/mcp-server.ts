@@ -4,7 +4,7 @@
  * Tools: search, stats, primer, ingest, answer, ... (see TOOLS below)
  */
 import { getDb, closeDb } from "./db.js";
-import { search, searchHybrid, formatResults } from "./search.js";
+import { searchHybrid, formatResultsForAgent } from "./search.js";
 import { crossSearch, formatCrossResults, getCrossStats } from "./cross-search.js";
 import { getMetrics } from "./metrics.js";
 import { buildGraph, getGraphStats, formatEntityQuery, upsertDecision, getCurrentDecision, getDecisionHistory, listDecisions } from "./knowledge-graph.js";
@@ -36,6 +36,17 @@ const TOOLS = [
         changed_since: { type: "string", description: "Recency window: only chunks created or updated after this date (ISO 8601 or relative)" },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "nox_mem_get",
+    description: "Return the full text of memory chunks by id (the 'chunk N' shown in nox_mem_search results). Use when a search hit was cut or you need the exact text.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "number", description: "One chunk id" },
+        ids: { type: "array", items: { type: "number" }, description: "Several chunk ids (max 10)" },
+      },
     },
   },
   {
@@ -213,6 +224,27 @@ const TOOLS = [
   },
 ];
 
+const MAX_GET_IDS = 10;
+
+/** Read-only by design: no access counter, no telemetry, nothing a ranking signal could learn from. */
+function getChunks(ids: number[]): string {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, source_file, chunk_type, chunk_text, source_date FROM chunks
+       WHERE id IN (${ids.map(() => "?").join(",")})`,
+    )
+    .all(...ids) as Array<{ id: number; source_file: string; chunk_type: string; chunk_text: string; source_date: string | null }>;
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids
+    .map((id) => {
+      const r = byId.get(id);
+      if (!r) return `chunk ${id}: not found`;
+      const date = r.source_date ? ` · ${r.source_date}` : "";
+      return `chunk ${r.id} · ${r.source_file} · ${r.chunk_type}${date}\n${r.chunk_text}`;
+    })
+    .join("\n\n---\n\n");
+}
+
 function sendResponse(id: number | string, result: unknown): void {
   const msg = JSON.stringify({ jsonrpc: "2.0", id, result });
   process.stdout.write(msg + "\n");
@@ -273,7 +305,16 @@ async function handleRequest(req: { id: number | string; method: string; params?
               changedSince: args.changed_since as string | undefined,
             });
             const results = await searchHybrid(query, limit, true, filter, { surface: "mcp", agent: process.env.NOX_AGENT_NAME });
-            text = formatResults(results);
+            text = formatResultsForAgent(results);
+            break;
+          }
+          case "nox_mem_get": {
+            const raw = args.ids ?? (args.id != null ? [args.id] : []);
+            const ids = (Array.isArray(raw) ? raw : [raw]).map(Number);
+            if (ids.length === 0 || ids.length > MAX_GET_IDS || ids.some((n) => !Number.isInteger(n) || n <= 0)) {
+              throw new Error(`nox_mem_get takes "id" or "ids" (1 to ${MAX_GET_IDS} positive integers)`);
+            }
+            text = getChunks(ids);
             break;
           }
           case "nox_mem_stats":

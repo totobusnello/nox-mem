@@ -102,10 +102,10 @@ after(async () => {
 
 const payload = (m: RpcMessage) => JSON.parse(m.result.content[0].text);
 
-test("tools/list: nox_mem_answer is registered (21 tools) with the answer input schema", async () => {
+test("tools/list: nox_mem_answer is registered (22 tools) with the answer input schema", async () => {
   const res = await client.call("tools/list");
   const tools: Array<{ name: string; description: string; inputSchema: any }> = res.result.tools;
-  assert.equal(tools.length, 21);
+  assert.equal(tools.length, 22);
   const t = tools.find((x) => x.name === "nox_mem_answer");
   assert.ok(t, "nox_mem_answer missing from tools/list");
   assert.deepEqual(t!.inputSchema.required, ["question"]);
