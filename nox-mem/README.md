@@ -84,8 +84,8 @@ nox-mem stats
 |---|---|---|
 | `NOX_DB_PATH` | `~/.nox-mem/nox.db` | SQLite database path. A missing parent directory is created (mode 0700). Its directory is auto-added to the op-audit allowlist. |
 | `NOX_MEM_DIR` | — | **Not** the notes folder: nothing ingests or watches it. It only sets where pre-op snapshots go (`$NOX_MEM_DIR/.nox-snapshots`) and widens the op-audit allowlist. |
-| `NOX_MEM_SCOPE` | unset | One sentence naming what the memory covers; the MCP server puts it in its `instructions` so the agent knows when a search can help. Recommended, see [Key commands](#key-commands). Collapsed to one line, capped at 800 characters. |
-| `NOX_MEM_INSTRUCTIONS` | on | `off` makes the MCP server send no `instructions`. |
+| `NOX_MEM_SCOPE` | unset | One sentence naming what the memory covers; the MCP server puts it in its `instructions` so the agent knows when a search can help. Without it the server sends no `instructions` (3.9.1+). Recommended, see [Key commands](#key-commands). Collapsed to one line, capped at 800 characters. |
+| `NOX_MEM_INSTRUCTIONS` | unset | `off` sends no `instructions` even with a scope; `unscoped` sends the generic text when `NOX_MEM_SCOPE` is unset (it searches on unrelated changes too). Unset: instructions only when `NOX_MEM_SCOPE` is set. |
 | `NOX_ALLOW_PROD_INGEST` | — | `1` skips the large-database ingest guard (same as `--allow-prod`). See [Large databases](#large-databases-the-ingest-guard). |
 
 ### API server
@@ -270,9 +270,11 @@ answered 7% of them right. The server now sends MCP `instructions` (the one serv
 clients keep in context before the agent picks a tool) saying when to search. With a one-sentence
 scope in `NOX_MEM_SCOPE`, the same tasks were answered right 53% of the time, and the agent
 searched on 2% of control tasks that the memory could not help with. Without a scope the server
-sends a generic version: about as accurate (56%), but it also searched on a third of unrelated
-configuration changes. So set the scope: name the projects or systems your memory holds, in one
-sentence, as you would to a new colleague. `NOX_MEM_INSTRUCTIONS=off` sends no instructions.
+sends no instructions (since 3.9.1): a generic version was about as accurate (56%), but it also
+searched on a third of unrelated configuration changes, so it is only sent if you ask for it with
+`NOX_MEM_INSTRUCTIONS=unscoped`. So set the scope: name the projects or systems your memory holds,
+in one sentence, as you would to a new colleague. `NOX_MEM_INSTRUCTIONS=off` sends no instructions
+even with a scope.
 These numbers are from one model, one client and one corpus; the instructions did not make the
 agent record decisions (`nox_mem_decision_set`) any more often.
 
