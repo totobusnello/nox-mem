@@ -27,6 +27,7 @@ export const RETENTION_BY_TYPE: Record<string, RetentionDays> = {
   digest:   180,    // digest consolida várias sessões
   pending:  30,     // se 30d sem resolver, escala pra review
   graph_node: 60,   // repos externos indexados via graphify — research-like, decay rápido
+  distilled: null,  // never — escolha explícita (DECISIONS 27/10 #3); session-distill grava NULL
   other:    90,     // default
 };
 

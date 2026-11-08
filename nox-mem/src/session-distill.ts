@@ -439,9 +439,14 @@ export async function distillSessions(options: DistillOptions = {}): Promise<Dis
         const tier = memory.importance >= 0.8 ? "working" : "peripheral";
         const today = new Date().toISOString().split("T")[0];
 
+        // retention_days = NULL is a choice, not an omission: distilled memory never decays
+        // (salience reads NULL as never-decay, so recency stays 1.0). Measured 2026-10-27 before
+        // choosing: a 90-day window would move a distilled chunk's median salience by -0.082 and
+        // archive nothing, which does not justify moving the served ranking. Listed explicitly so
+        // that no backfill or default can turn it into 90 days by accident (DECISIONS 27/10 #3).
         db.prepare(`
-          INSERT INTO chunks (source_file, chunk_text, chunk_type, source_date, metadata, tier, importance)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO chunks (source_file, chunk_text, chunk_type, source_date, metadata, tier, importance, retention_days)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
         `).run(
           `sessions/${agentId}/${sessionKey}`,
           `[${memory.category}|${agentId}] ${memory.text}`,
