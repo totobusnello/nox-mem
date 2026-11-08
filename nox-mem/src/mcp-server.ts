@@ -18,16 +18,21 @@ import { createInterface } from "readline";
 import { VERSION } from "./version.js";
 import { parseTemporalFilter } from "./lib/dates.js";
 import { noxMemAnswerTool } from "./mcp/tools/answer.js";
+import { serverInstructions } from "./mcp-instructions.js";
 
 const SERVER_INFO = {
   name: "nox-mem",
   version: VERSION,
 };
 
+// When to search lives here, not in tool descriptions: clients that defer tool schemas show the model
+// only tool names until it has already decided to search. See mcp-instructions.ts.
+const INSTRUCTIONS = serverInstructions();
+
 const TOOLS = [
   {
     name: "nox_mem_search",
-    description: "Search nox-mem memory using FTS5 full-text search with BM25 ranking, type boosting, and recency scoring",
+    description: "Search this user's project memory (decisions, incidents, measurements, notes) with hybrid full-text and semantic ranking. Use before changing a setting, default, threshold, schedule, schema, model or dependency, or before explaining why something is the way it is: past decisions often forbid the obvious change. Returns each hit's chunk id, source, date and text.",
     inputSchema: {
       type: "object",
       properties: {
@@ -165,7 +170,7 @@ const TOOLS = [
   },
   {
     name: "nox_mem_decision_set",
-    description: "Set/update a versioned decision. Stores full history — every call creates a new version. Use for technical decisions, policies, or operational rules that may evolve.",
+    description: "Record a decision the user states, with its reason, as a versioned entry (every call creates a new version). Use when the user decides something mid-task, or a root cause or operational rule is confirmed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -265,6 +270,7 @@ async function handleRequest(req: { id: number | string; method: string; params?
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
+        ...(INSTRUCTIONS ? { instructions: INSTRUCTIONS } : {}),
       });
       break;
 
