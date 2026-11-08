@@ -344,10 +344,26 @@ program
 
 program
   .command("compact")
-  .description("Compress old chunks (>30 days) into summaries")
+  .description(
+    "Replace old chunks with one LLM summary per file and DELETE the originals (a snapshot is taken first). " +
+      "Refuses without --destructive; use --dry-run to preview.",
+  )
   .option("--age <days>", "Minimum age in days", "30")
   .option("--dry-run", "Preview without making changes", false)
-  .action(async (opts: { age: string; dryRun: boolean }) => {
+  .option("--destructive", "Confirm that the original chunks will be deleted", false)
+  .action(async (opts: { age: string; dryRun: boolean; destructive: boolean }) => {
+    // Guard (2026-11-08): in the reference deployment `compact` reduced 10,204 chunks to 210
+    // summaries over six months with no decision on record (DECISIONS "NÃO FAZEMOS" #32), and the
+    // deleted originals carried the evidence the KG pointed to. Deleting must be an explicit choice.
+    if (!opts.dryRun && !opts.destructive) {
+      console.error(
+        "[COMPACT] Refused: compact deletes the original chunks and keeps only a summary per file. " +
+          "Run with --dry-run to see what would change, or --destructive to proceed (a snapshot is taken first).",
+      );
+      closeDb();
+      process.exitCode = 2;
+      return;
+    }
     const result = await compact(parseInt(opts.age, 10), opts.dryRun);
     console.log("[COMPACT] Done: " + result.compacted + " compacted, " + result.summaries + " summaries, " + result.deleted + " removed");
     closeDb();

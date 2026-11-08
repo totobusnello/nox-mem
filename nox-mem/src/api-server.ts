@@ -497,19 +497,4 @@ server.listen(PORT, HOST, () => {
   } catch (err) {
     console.error(`[nox-mem-api] reapZombies failed:`, err);
   }
-
-  // D01 (2026-05-07): pre-warm reranker model se mode != off pra evitar p95 cold-start (~12-90s).
-  // Spec specs/2026-05-07-D01-cross-encoder-reranker.md §risks §1. Single-shot, fire-and-forget.
-  const rerankerMode = process.env.NOX_RERANKER_MODE ?? "off";
-  if (rerankerMode === "shadow" || rerankerMode === "active") {
-    import("./lib/reranker.js")
-      .then(async (mod) => {
-        const t0 = Date.now();
-        await mod.preloadModel();
-        console.log(`[nox-mem-api] reranker pre-warmed in ${Date.now() - t0}ms (mode=${rerankerMode})`);
-      })
-      .catch((err) => {
-        console.error(`[nox-mem-api] reranker pre-warm failed (fail-open, lazy load on first call):`, err?.message ?? err);
-      });
-  }
 });
