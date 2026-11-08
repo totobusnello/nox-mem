@@ -52,7 +52,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "rm -rf dist && npm run build",
     "test": "rm -rf dist && npm run build && tsc -p tsconfig.test.json && node --test \"dist/**/*.test.js\"",
     "test:retention": "node --test dist/__tests__/retention.test.js",
     "test:op-audit": "node --test dist/__tests__/op-audit-e2e.test.js"
