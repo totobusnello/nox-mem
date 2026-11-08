@@ -21,13 +21,24 @@ test("scoped text equals the measured T2 text", () => {
   assert.equal(serverInstructions({ NOX_MEM_SCOPE: MEASURED_SCOPE }), MEASURED_T2);
 });
 
-test("unscoped text equals the measured T text", () => {
-  assert.equal(serverInstructions({}), MEASURED_T);
-  assert.equal(serverInstructions({ NOX_MEM_SCOPE: "   " }), MEASURED_T);
+test("without a scope the field is omitted (only the scoped text passed the evaluation)", () => {
+  assert.equal(serverInstructions({}), undefined);
+  assert.equal(serverInstructions({ NOX_MEM_SCOPE: "   " }), undefined);
+  assert.equal(serverInstructions({ NOX_MEM_INSTRUCTIONS: "on" }), undefined);
+});
+
+test("NOX_MEM_INSTRUCTIONS=unscoped opts into the measured T text", () => {
+  assert.equal(serverInstructions({ NOX_MEM_INSTRUCTIONS: "unscoped" }), MEASURED_T);
+  assert.equal(serverInstructions({ NOX_MEM_INSTRUCTIONS: " Unscoped " }), MEASURED_T);
+  // a scope wins over the unscoped opt-in
+  assert.equal(serverInstructions({ NOX_MEM_INSTRUCTIONS: "unscoped", NOX_MEM_SCOPE: MEASURED_SCOPE }), MEASURED_T2);
 });
 
 test("NOX_MEM_INSTRUCTIONS=off disables the field", () => {
-  for (const v of ["off", "OFF", "0", "false"]) assert.equal(serverInstructions({ NOX_MEM_INSTRUCTIONS: v }), undefined);
+  for (const v of ["off", "OFF", "0", "false"]) {
+    assert.equal(serverInstructions({ NOX_MEM_INSTRUCTIONS: v }), undefined);
+    assert.equal(serverInstructions({ NOX_MEM_INSTRUCTIONS: v, NOX_MEM_SCOPE: MEASURED_SCOPE }), undefined);
+  }
 });
 
 test("scope is normalised: one line, no trailing period, bounded", () => {
@@ -64,5 +75,10 @@ test("initialize carries the scoped instructions when NOX_MEM_SCOPE is set", asy
 
 test("initialize omits instructions when NOX_MEM_INSTRUCTIONS=off", async () => {
   const r = await initialize({ NOX_MEM_INSTRUCTIONS: "off" });
+  assert.equal("instructions" in r, false);
+});
+
+test("initialize omits instructions when no scope is set", async () => {
+  const r = await initialize({});
   assert.equal("instructions" in r, false);
 });

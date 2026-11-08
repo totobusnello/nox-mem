@@ -14,6 +14,10 @@
  *   - unscoped (NOX_MEM_SCOPE unset): pass rate 0.07 -> 0.56, +0.49 [0.35, 0.63], but it searched
  *     on about one in three unrelated configuration changes (+31.7 pp).
  *
+ * Only the scoped text passed the evaluation's decision rule, so it is the only one sent by default:
+ * with no NOX_MEM_SCOPE the field is omitted (3.9.1; 3.9.0 sent the unscoped text). The unscoped
+ * text stays available on explicit request, NOX_MEM_INSTRUCTIONS=unscoped, with the cost above.
+ *
  * Edits to the wording are edits to a measured intervention: the tests pin both texts, and a
  * change should come with a new run.
  */
@@ -68,14 +72,17 @@ export function normaliseScope(raw: string | undefined): string {
 }
 
 /**
- * Build the `instructions` text. Returns undefined when disabled with NOX_MEM_INSTRUCTIONS=off,
- * so the caller can omit the field.
+ * Build the `instructions` text, or undefined so the caller omits the field:
+ *   NOX_MEM_INSTRUCTIONS=off|0|false  -> undefined, even with a scope
+ *   NOX_MEM_SCOPE set                 -> scoped text (the one that passed)
+ *   NOX_MEM_INSTRUCTIONS=unscoped     -> unscoped text (searched on ~1 in 3 unrelated config changes)
+ *   otherwise                         -> undefined
  */
 export function serverInstructions(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const mode = (env.NOX_MEM_INSTRUCTIONS || "").trim().toLowerCase();
   if (mode === "off" || mode === "0" || mode === "false") return undefined;
   const scope = normaliseScope(env.NOX_MEM_SCOPE);
-  const intro = scope ? SCOPED_INTRO(scope) : UNSCOPED_INTRO;
-  const when = scope ? SCOPED_WHEN : UNSCOPED_WHEN;
-  return [intro, when, HOW, WRITE].join("\n\n");
+  if (scope) return [SCOPED_INTRO(scope), SCOPED_WHEN, HOW, WRITE].join("\n\n");
+  if (mode === "unscoped") return [UNSCOPED_INTRO, UNSCOPED_WHEN, HOW, WRITE].join("\n\n");
+  return undefined;
 }
