@@ -40,9 +40,7 @@ If you want to run the full competitive suite, open an issue — we'll point you
 
 - **LoCoMo retrieval@10 strict (74.52%)** is a **retrieval** metric, shown next to Mem0's reported **F1**. They are different metrics — it's there for scale, not as a like-for-like win.
 - **LongMemEval 1.0** is the **oracle retrieval ceiling**: with gold answers present in the corpus, nDCG@10 saturates at 1.0. It is **not** an end-to-end inference score. Standalone task accuracy is ~68%.
-- **769× cheaper / $0 per query** compares nox-mem's **KG path** (pure SQL, no LLM call) to **Mem0 Cloud's** per-query price, which **includes inference**. It's apples-to-oranges by design and true **only for that path** — a normal hybrid search that embeds the query does cost an embedding call.
 - **< $11/mo all-in** assumes the cheapest Hostinger VPS + Google AI Studio's free tier. Your bill depends on your provider and volume.
-- **+78.8% nDCG@10** is measured against an **internal local-embedding baseline**, not against a competitor.
 - **−10.54pp on backbone swap (1.6× more portable)** measures the drop when swapping the LLM backbone, vs MemOS's −16.72pp under the same swap.
 
 ---

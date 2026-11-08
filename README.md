@@ -25,7 +25,6 @@
 </p>
 
 <p align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-locomo-dark.svg"><img src="assets/readme/stat-locomo-light.svg" alt="+78.8% nDCG@10 vs baseline" height="64"></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-longmemeval-dark.svg"><img src="assets/readme/stat-longmemeval-light.svg" alt="LongMemEval nDCG@10 1.0 retrieval ceiling (oracle)" height="64"></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-latency-dark.svg"><img src="assets/readme/stat-latency-light.svg" alt="p50 latency" height="64"></picture>
   <br>
@@ -64,7 +63,7 @@ Long-term memory engine that any agent (OpenClaw, Hermes, Claude Code, custom) c
 **Five layers, one SQLite file:**
 
 1. **Ingest** — router auto-detects entity files (`compiled` / `frontmatter` / `timeline` sections), plain markdown, or graphify input. A privacy filter applies redaction patterns before anything is stored.
-2. **Store** — chunks land in SQLite with an FTS5 index plus a 3072-d Gemini vector via `sqlite-vec`. Retention is typed: `feedback`/`person` never decay, `lesson` 180d, `decision`/`project` 365d, default 90d.
+2. **Store** — chunks land in SQLite with an FTS5 index plus a 3072-d Gemini vector via `sqlite-vec`. Each chunk carries a typed retention window (`feedback`/`person` none, `lesson` 180d, `decision`/`project` 365d, default 90d), used only as the recency half-life in the salience score (`NOX_SALIENCE_MODE`, `shadow` by default); nothing is deleted by age.
 3. **Retrieve** — the query runs in parallel through FTS5 BM25 and Gemini semantic; **RRF fusion (k=60)** merges them, with language-aware weights.
 4. **Rank** — **salience** (`recency × pain × importance`) composes additively with section and temporal boosts. *Shadow discipline:* ranking changes ship in shadow mode for 7 days before they ever touch a live query.
 5. **Answer** — CLI, MCP, and HTTP surfaces with citation footers and an anti-hallucination guard.
@@ -239,7 +238,9 @@ The engine is the same core benchmarked in [`memoria-nox`](https://github.com/to
   </picture>
 </p>
 
-### Memory & multi-hop SOTA
+### Research results (memoria-nox harness, not this package)
+
+These come from the research harness in `memoria-nox`, each with the reader backbone noted below; the package does not reproduce them on its own (see REPRODUCE.md).
 
 | Benchmark | nox-mem | Best competitor | Δ |
 |---|---:|---|---:|
@@ -253,19 +254,16 @@ The engine is the same core benchmarked in [`memoria-nox`](https://github.com/to
 
 | Dimension | nox-mem | Comparison |
 |---|---:|---|
-| **KG path latency** | **2.5ms p50** | none sub-10ms published |
-| **KG path cost/query** | **$0.00** | Mem0 Cloud $0.001 → **769× cheaper** |
+| **KG path latency** (`GET /api/kg/path`, measured in production 2026-05-29) | **2.5ms p50**, no LLM or embedding call | — |
 | **Self-hosted footprint** | **399MB single-process** | Zep/Mem0/MemOS run 4+ services |
-| **Backbone portability** | **−10.54pp on backbone swap** | MemOS −16.72pp → **1.6× more portable** |
+| **Backbone portability** (research harness) | **−10.54pp on backbone swap** | MemOS −16.72pp → **1.6× more portable** |
 | **Monthly OPEX** (embed + KG + VPS) | **< $11/mo** all-in | — |
 
 <sub>
 <b>How to read these.</b> All results are 5-batch with 95% CI on the backbone noted; EverMemBench / MA / backbone-portability are on Gemini-3-flash.<br>
 &bull; <b>LoCoMo</b> is <i>retrieval@10 strict</i> (a retrieval metric) shown next to Mem0's reported F1 — different metrics, for scale, not a like-for-like claim.<br>
 &bull; <b>LongMemEval 1.0</b> is the <i>oracle retrieval ceiling</i> (gold answers in-corpus &rArr; nDCG@10 = 1.0), not an end-to-end inference score; standalone accuracy is ~68%.<br>
-&bull; <b>KG-path $0 / 769&times; cheaper</b> compares nox-mem's pure-SQL graph path (no LLM call) to Mem0 Cloud's per-query price (which includes inference) — true for that path only, apples-to-oranges by design.<br>
 &bull; <b>&lt; $11/mo</b> assumes the cheapest Hostinger VPS + Google AI Studio free tier.<br>
-&bull; <b>+78.8% nDCG@10</b> is vs an internal local-embedding baseline.<br>
 Step-by-step on what's reproducible from this package vs the research harness: <a href="REPRODUCE.md"><b>REPRODUCE.md</b></a>. Methodology, paper, and full competitive analysis: <a href="https://github.com/totobusnello/memoria-nox"><code>memoria-nox</code></a>. MemOS arXiv:2602.01313 &middot; MuSiQue (Trivedi 2022) &middot; HotPotQA (Yang 2018).
 </sub>
 
