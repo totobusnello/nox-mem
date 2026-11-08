@@ -84,6 +84,8 @@ nox-mem stats
 |---|---|---|
 | `NOX_DB_PATH` | `~/.nox-mem/nox.db` | SQLite database path. A missing parent directory is created (mode 0700). Its directory is auto-added to the op-audit allowlist. |
 | `NOX_MEM_DIR` | — | **Not** the notes folder: nothing ingests or watches it. It only sets where pre-op snapshots go (`$NOX_MEM_DIR/.nox-snapshots`) and widens the op-audit allowlist. |
+| `NOX_MEM_SCOPE` | unset | One sentence naming what the memory covers; the MCP server puts it in its `instructions` so the agent knows when a search can help. Recommended, see [Key commands](#key-commands). Collapsed to one line, capped at 800 characters. |
+| `NOX_MEM_INSTRUCTIONS` | on | `off` makes the MCP server send no `instructions`. |
 | `NOX_ALLOW_PROD_INGEST` | — | `1` skips the large-database ingest guard (same as `--allow-prod`). See [Large databases](#large-databases-the-ingest-guard). |
 
 ### API server
@@ -257,8 +259,22 @@ nox-mem --help             — full command reference
 Wire the MCP server into Claude Code:
 
 ```bash
-claude mcp add nox-mem -e NOX_DB_PATH="$HOME/.nox-mem/nox.db" -e GEMINI_API_KEY="$GEMINI_API_KEY" -- nox-mem-mcp
+claude mcp add nox-mem -e NOX_DB_PATH="$HOME/.nox-mem/nox.db" -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+  -e NOX_MEM_SCOPE="the billing API and its deploy pipeline, and the data warehouse" -- nox-mem-mcp
 ```
+
+**Say what the memory covers (`NOX_MEM_SCOPE`).** An agent that is never told the memory holds
+something relevant does not search it: in our evaluation (Claude Code, Sonnet 5.5) an agent with
+the MCP server connected and no other guidance searched in 5% of tasks that needed the memory and
+answered 7% of them right. The server now sends MCP `instructions` (the one server-side text that
+clients keep in context before the agent picks a tool) saying when to search. With a one-sentence
+scope in `NOX_MEM_SCOPE`, the same tasks were answered right 53% of the time, and the agent
+searched on 2% of control tasks that the memory could not help with. Without a scope the server
+sends a generic version: about as accurate (56%), but it also searched on a third of unrelated
+configuration changes. So set the scope: name the projects or systems your memory holds, in one
+sentence, as you would to a new colleague. `NOX_MEM_INSTRUCTIONS=off` sends no instructions.
+These numbers are from one model, one client and one corpus; the instructions did not make the
+agent record decisions (`nox_mem_decision_set`) any more often.
 
 HTTP endpoints worth knowing: `GET /api/health`, `GET /api/search?q=`, `GET /api/brief`, `POST /api/answer`, `GET /api/kg`, and `GET /api/reflect?q=…` (synthesis over memory + KG; `q` is required, a request without it is a 400).
 
