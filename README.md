@@ -64,8 +64,8 @@ Long-term memory engine that any agent (OpenClaw, Hermes, Claude Code, custom) c
 
 1. **Ingest** — router auto-detects entity files (`compiled` / `frontmatter` / `timeline` sections), plain markdown, or graphify input. A privacy filter applies redaction patterns before anything is stored.
 2. **Store** — chunks land in SQLite with an FTS5 index plus a 3072-d Gemini vector via `sqlite-vec`. Each chunk carries a typed retention window (`feedback`/`person` none, `lesson` 180d, `decision`/`project` 365d, default 90d), used only as the recency half-life in the salience score (`NOX_SALIENCE_MODE`, `shadow` by default); nothing is deleted by age.
-3. **Retrieve** — the query runs in parallel through FTS5 BM25 and Gemini semantic; **RRF fusion (k=60)** merges them, with language-aware weights.
-4. **Rank** — **salience** (`recency × pain × importance`) composes additively with section and temporal boosts. *Shadow discipline:* ranking changes ship in shadow mode for 7 days before they ever touch a live query.
+3. **Retrieve** — the query runs in parallel through FTS5 BM25 and Gemini semantic; **RRF fusion (k=60)** merges them. (Language-aware RRF weights were measured in the research harness and are not in this package.)
+4. **Rank** — a section boost for entity files, plus a **salience** score (weighted sum: importance 0.55, recency 0.15, pain 0.10, access 0.20) that is computed in `shadow` mode by default and only changes the order with `NOX_SALIENCE_MODE=active`. Dates act as hard filters (`--as-of`, `--changed-since`), not as a boost. *Shadow discipline:* ranking changes run in shadow for 7 days before they touch a live query.
 5. **Answer** — CLI, MCP, and HTTP surfaces with citation footers and an anti-hallucination guard.
 
 Copy the SQLite file, you copy the memory. Switch the embedding provider, the store doesn't care.
