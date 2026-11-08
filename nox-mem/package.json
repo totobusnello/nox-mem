@@ -1,6 +1,6 @@
 {
   "name": "nox-mem",
-  "version": "3.9.1",
+  "version": "3.10.0",
   "description": "Pain-weighted hybrid memory engine: FTS5 + semantic search + knowledge graph, self-hosted on any Linux VPS.",
   "type": "module",
   "license": "MIT",
@@ -63,7 +63,6 @@
     "sqlite-vec": "^0.1.10-alpha.1"
   },
   "optionalDependencies": {
-    "@xenova/transformers": "^2.17.2",
     "sqlite-vec-darwin-arm64": "^0.1.10-alpha.1",
     "sqlite-vec-darwin-x64": "^0.1.10-alpha.1",
     "sqlite-vec-linux-arm64": "^0.1.10-alpha.1",
