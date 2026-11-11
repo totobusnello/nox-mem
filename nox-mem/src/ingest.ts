@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "fs";
-import { relative, resolve } from "path";
+import { resolve } from "path";
 import Database from "better-sqlite3";
 import { getDb } from "./db.js";
 import { syncFileChunks, type DesiredChunk } from "./lib/chunk-sync.js";
@@ -8,7 +8,7 @@ import { getInitialTier, getInitialImportance } from "./tier-manager.js";
 import { resolveRetention } from "./retention.js";
 import { inferPain, inferImportance } from "./salience.js";
 import { redact } from "./privacy/filter.js";
-import { workspaceRoot } from "./lib/workspace.js";
+import { workspaceRoot, sourceKeyFor } from "./lib/workspace.js";
 
 const WORKSPACE = workspaceRoot();
 
@@ -178,7 +178,7 @@ const EMPTY: IngestFileResult = { chunks: 0, inserted: [], kept: 0, deleted: 0, 
  * disk again, so a tombstone left when it was deleted is resolved (2026-10-15).
  */
 export function ingestMarkdownSync(db: Database.Database, filePath: string): IngestFileResult {
-  const relPath = relative(WORKSPACE, filePath);
+  const relPath = sourceKeyFor(filePath, WORKSPACE);
   // A2 (2026-04-25): entity routing lives in lib/ingest-router.ts — single dispatch.
   let content = readFileSync(filePath, "utf-8");
   if (!content.trim()) {

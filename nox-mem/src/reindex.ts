@@ -40,9 +40,9 @@ import { routeIngestSync } from "./lib/ingest-router.js";
 import { ensureTombstoneTable, tombstoneFile } from "./lib/tombstone.js";
 import { existsSync, readdirSync } from "fs";
 import { createHash } from "crypto";
-import { join, relative, resolve } from "path";
+import { join, resolve } from "path";
 import { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError, MIN_RETENTION_RATIO } from "./reindex-errors.js";
-import { workspaceRoot, workspaceRootWithSource } from "./lib/workspace.js";
+import { workspaceRoot, workspaceRootWithSource, sourceKeyFor } from "./lib/workspace.js";
 import { DEFAULT_STANDALONE_DB_PATH } from "./lib/db-path.js";
 
 export { ReindexWipeDetectedError, ReindexSourceMissingError, ReindexWorkspaceMismatchError } from "./reindex-errors.js";
@@ -194,7 +194,7 @@ async function _reindexImpl(): Promise<ReindexImplResult> {
   // Same scan as assertReindexSource — one definition of "the source".
   const { memoryFiles, sharedFiles } = collectReindexFiles();
   const allFiles = [...memoryFiles, ...sharedFiles];
-  const roots = reindexRoots().map((r) => relative(WORKSPACE, r) + "/");
+  const roots = reindexRoots().map((r) => sourceKeyFor(r, WORKSPACE) + "/");
   const fileErrors: Array<{ file: string; error: string }> = [];
   const t = { chunks: 0, kept: 0, inserted: 0, deleted: 0, adopted: 0, tombstoned: 0 };
   let retainedDistinct = preDistinct;

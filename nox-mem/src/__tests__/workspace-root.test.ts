@@ -10,11 +10,11 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { runCli, tmpRoot } from "./cli-helpers.js";
-import { ORIGIN_WORKSPACE, workspaceRootWithSource } from "../lib/workspace.js";
+import { ORIGIN_WORKSPACE, sourceKeyFor, workspaceRootWithSource } from "../lib/workspace.js";
 import { STANDALONE_REBASE_MARKER } from "../db.js";
 
 const ROOTS: string[] = [];
@@ -114,4 +114,19 @@ test("v20 key rebase runs once (marker), and never outside standalone", async ()
   const keys = (db.prepare("SELECT source_file FROM chunks ORDER BY id").all() as Array<{ source_file: string }>).map((r) => r.source_file);
   assert.deepEqual(keys, ["memory/a.md", "../notes/b.md"]);
   db.close();
+});
+
+test("sourceKeyFor: a workspace root that is itself a symlink keeps the keys it always had", () => {
+  // Agent databases on the origin VPS run with OPENCLAW_WORKSPACE=/root/.openclaw/agents/<a>, a symlink,
+  // and reindex walks the files under that same link: the key stays `memory/x.md`, not a `../` detour.
+  const root = tmpRoot("sk-root-");
+  ROOTS.push(root);
+  const real = join(root, "real");
+  mkdirSync(join(real, "memory"), { recursive: true });
+  writeFileSync(join(real, "memory", "x.md"), "x");
+  symlinkSync(real, join(root, "link"));
+  assert.equal(sourceKeyFor(join(root, "link", "memory", "x.md"), join(root, "link")), "memory/x.md");
+  assert.equal(sourceKeyFor(join(real, "memory", "x.md"), join(root, "link")), "memory/x.md");
+  assert.equal(sourceKeyFor(join(root, "link", "memory", "missing", "y.md"), join(root, "link")), "memory/missing/y.md");
+  assert.equal(sourceKeyFor(join(root, "elsewhere", "z.md"), join(root, "link")), "../elsewhere/z.md");
 });
