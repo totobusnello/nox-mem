@@ -25,20 +25,19 @@
 // differently, and a CREATE TABLE IF NOT EXISTS lands the same on both.
 
 import Database from "better-sqlite3";
-import { relative, resolve } from "path";
-import { workspaceRoot } from "./workspace.js";
+import { sourceKeyFor } from "./workspace.js";
 
 /**
- * The `source_file` key ingest writes for `path`: `relative(WORKSPACE, filePath)`
- * in ingest.ts and ingest-router.ts, where `relative()` resolves a relative
- * argument against the cwd. Every command that names a file by path has to land
- * on this same key, or it silently misses the chunks.
+ * The `source_file` key ingest writes for `path` (`sourceKeyFor` in workspace.ts,
+ * the one definition ingest, the router, the entity ingest, watch and reindex
+ * use); a relative argument resolves against the cwd. Every command that names
+ * a file by path has to land on this same key, or it silently misses the chunks.
  *
  * On a standalone install nothing lives under the default workspace, so keys
  * start with `../`; that is the key, not an error.
  */
 export function sourceKey(path: string): string {
-  return relative(workspaceRoot(), resolve(path));
+  return sourceKeyFor(path);
 }
 
 /**

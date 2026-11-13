@@ -18,9 +18,9 @@
  * (`migrateStandaloneKeys` in db.ts).
  */
 
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 
 export const ORIGIN_WORKSPACE = "/root/.openclaw/workspace";
 
@@ -41,4 +41,38 @@ export function workspaceRootWithSource(
 
 export function workspaceRoot(): string {
   return workspaceRootWithSource().root;
+}
+
+/**
+ * `path` with every symlink resolved, also when the file itself no longer exists
+ * (a deleted note still has to land on the key it was stored under): the deepest
+ * existing ancestor is resolved and the missing tail is appended as written.
+ */
+export function canonicalPath(path: string): string {
+  const abs = resolve(path);
+  const tail: string[] = [];
+  let head = abs;
+  for (;;) {
+    try {
+      const real = realpathSync(head);
+      return tail.length ? join(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return abs;
+      tail.push(basename(head));
+      head = parent;
+    }
+  }
+}
+
+/**
+ * The `source_file` key for `path`, relative to the workspace root. Both sides
+ * go through `canonicalPath`, so a file reached through a symlink gets the same
+ * key as the file reached directly. Until 3.10.1 the key was `relative()` of
+ * the path as given: on the origin VPS `/root/.openclaw/agents/<a>` is a symlink
+ * to `<workspace>/agents/<a>`, and a job that ingested through the link stored
+ * the same note a second time under `../agents/<a>/…` (83 sources, 2026-11-11).
+ */
+export function sourceKeyFor(path: string, root: string = workspaceRoot()): string {
+  return relative(canonicalPath(root), canonicalPath(path));
 }

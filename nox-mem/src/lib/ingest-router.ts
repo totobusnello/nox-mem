@@ -10,10 +10,10 @@
 // algum legacy caller pule o router). Mas o router é o caminho canônico daqui em diante.
 
 import type Database from "better-sqlite3";
-import { relative } from "node:path";
+
 import { ingestFile, ingestMarkdownSync } from "../ingest.js";
 import { ingestEntityFile, ingestEntitySync } from "../ingest-entity.js";
-import { workspaceRoot } from "./workspace.js";
+import { workspaceRoot, sourceKeyFor } from "./workspace.js";
 
 const WORKSPACE = workspaceRoot();
 
@@ -44,7 +44,7 @@ const diffOf = (r: { inserted: number[]; kept: number; deleted: number; adopted:
  * arquivo quando adicionar novo tipo (ex: "pdf-text-layer", "fathom-transcript").
  */
 export function detectIngestKind(filePath: string): IngestKind {
-  const relPath = relative(WORKSPACE, filePath);
+  const relPath = sourceKeyFor(filePath, WORKSPACE);
   if (relPath.startsWith("memory/entities/") && filePath.endsWith(".md")) return "entity";
   if (relPath.startsWith("graphify-out/") || relPath.includes("/graphify-out/")) return "graphify";
   return "markdown";

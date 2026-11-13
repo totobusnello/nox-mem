@@ -9,11 +9,11 @@
  */
 
 import { watch, statSync, existsSync, readdirSync } from "fs";
-import { resolve, extname, relative } from "path";
+import { resolve, extname } from "path";
 import { routeIngest } from "./lib/ingest-router.js";
 import { getDb } from "./db.js";
 import { tombstoneFile, tombstonePrefix } from "./lib/tombstone.js";
-import { workspaceRoot } from "./lib/workspace.js";
+import { workspaceRoot, sourceKeyFor } from "./lib/workspace.js";
 
 const WORKSPACE = workspaceRoot();
 
@@ -74,7 +74,7 @@ const debounceMap = new Map<string, ReturnType<typeof setTimeout>>();
 const DEBOUNCE_MS = 2000;
 
 function tombstoneMissing(filepath: string): void {
-  const rel = relative(WORKSPACE, filepath);
+  const rel = sourceKeyFor(filepath, WORKSPACE);
   if (rel.startsWith("..")) return; // NOX_WATCH_DIRS outside the workspace: no source_file to match
   try {
     const r = tombstoneFile(getDb(), rel, existsSync(filepath), "deleted");
@@ -141,7 +141,7 @@ function debounceTombstoneDir(dirpath: string): void {
   debounceMap.set(key, setTimeout(() => {
     debounceMap.delete(key);
     if (existsSync(dirpath)) return;
-    const rel = relative(WORKSPACE, dirpath);
+    const rel = sourceKeyFor(dirpath, WORKSPACE);
     if (rel.startsWith("..") || rel === "") return;
     try {
       const r = tombstonePrefix(getDb(), rel, (p) => existsSync(resolve(WORKSPACE, p)), "deleted");

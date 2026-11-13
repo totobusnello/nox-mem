@@ -7,7 +7,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync, renameSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync, renameSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -394,6 +394,24 @@ test("sourceKey lands on the key ingest wrote — relative or absolute, inside o
   } finally {
     process.chdir(cwd);
   }
+});
+
+test("a file reached through a symlink lands on the same key as the file reached directly", async () => {
+  // Origin VPS, 2026-11-11: /root/.openclaw/agents/<a> is a symlink to <workspace>/agents/<a>. The
+  // end-of-day job ingested through the link and stored every note a second time under
+  // `../agents/<a>/…`; 83 sources, 7 of them duplicated. The key now resolves symlinks on both sides.
+  const real = join(WS, "agents", "nx", "memory");
+  mkdirSync(real, { recursive: true });
+  writeFileSync(join(real, "day.md"), doc(2));
+  const link = join(TMP_ROOT, "agents-link");
+  symlinkSync(join(WS, "agents", "nx"), link);
+  await routeIngest(join(link, "memory", "day.md"));
+  await routeIngest(join(real, "day.md"));
+  const stored = getDb().prepare("SELECT DISTINCT source_file FROM chunks WHERE source_file LIKE '%nx/memory/day.md'").all() as Array<{ source_file: string }>;
+  assert.deepEqual(stored.map((r) => r.source_file), ["agents/nx/memory/day.md"]);
+  assert.equal(sourceKey(join(link, "memory", "day.md")), "agents/nx/memory/day.md");
+  // A deleted file still resolves through the link (the watcher tombstones after the unlink).
+  assert.equal(sourceKey(join(link, "memory", "gone.md")), "agents/nx/memory/gone.md");
 });
 
 test("every tombstone CLI command resolves its path through sourceKey", () => {

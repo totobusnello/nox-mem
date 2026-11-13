@@ -23,7 +23,7 @@
 // Each file produces N+2 chunks: 1 frontmatter + 1 compiled + N timeline entries.
 
 import { existsSync, readFileSync } from "fs";
-import { relative, resolve } from "path";
+import { resolve } from "path";
 import Database from "better-sqlite3";
 import { getDb } from "./db.js";
 import { syncFileChunks, type DesiredChunk } from "./lib/chunk-sync.js";
@@ -31,7 +31,7 @@ import { getInitialTier } from "./tier-manager.js";
 import { resolveRetention } from "./retention.js";
 import { inferPain, inferImportance } from "./salience.js";
 import { redact as _redactPrivacy } from "./privacy/filter.js";
-import { workspaceRoot } from "./lib/workspace.js";
+import { workspaceRoot, sourceKeyFor } from "./lib/workspace.js";
 
 const WORKSPACE = workspaceRoot();
 
@@ -156,7 +156,7 @@ export interface EntityIngestResult {
  * `compiled == frontmatter` invariant (CLAUDE.md rule 6) holds per file.
  */
 export function ingestEntitySync(db: Database.Database, filePath: string): EntityIngestResult {
-  const relPath = relative(WORKSPACE, filePath);
+  const relPath = sourceKeyFor(filePath, WORKSPACE);
   const content = readFileSync(filePath, "utf-8");
 
   const entity = parseEntityFile(content);
