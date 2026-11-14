@@ -7,17 +7,27 @@
  * Fluxo:
  *   1. scan: lista sessões JSONL por agente, filtra já processadas
  *   2. chunk: extrai blocos user+assistant, aplica noise filter
- *   3. distill: envia para Gemini Flash (ou Groq fallback) → memories
+ *   3. distill: envia para Gemini Flash-Lite → memories
  *   4. import: dedup semântico + ingest como chunk_type="distilled"
  */
 
-import { readdirSync, readFileSync, existsSync, statSync } from "fs";
+import { readdirSync, readFileSync, existsSync, statSync, appendFileSync } from "fs";
 import { resolve } from "path";
 import { homedir } from "os";
 import { getDb } from "./db.js";
 import { isNoise } from "./noise-filter.js";
 import { isDuplicate } from "./dedup.js";
 import { incrementMetric } from "./metrics.js";
+
+// One line of counts per real run, appended to the file named by NOX_DISTILL_OUTCOMES_PATH.
+// Off when the variable is unset: the same counts already go to stdout, and a package should
+// not write files nobody asked for. Set it when the distiller runs under a scheduler that keeps
+// no stdout (the case that motivated it: a cron agent whose output nothing kept). Counts and
+// agent ids only, no block text, no memory text. No mkdir: a recursive mkdirSync under /proc
+// spun forever in a smoke test; a missing directory fails the append at once and only warns.
+export function outcomesPath(): string | null {
+  return process.env.NOX_DISTILL_OUTCOMES_PATH || null;
+}
 // tier-manager not imported here: distilled chunks use LLM-provided importance to determine tier
 // (importance >= 0.8 → working, else peripheral) — more nuanced than static getInitialTier("distilled")
 
@@ -109,13 +119,20 @@ export function ensureDistillTable(db: ReturnType<typeof getDb>): void {
 
 // ─── Session scanning ────────────────────────────────────────────────────────
 
-function listUnprocessedSessions(
+export interface PendingSession {
+  agentId: string;
+  sessionFile: string;
+  sessionKey: string;
+  mtimeMs: number;
+}
+
+export function listUnprocessedSessions(
   db: ReturnType<typeof getDb>,
   agentIds: string[],
   lookbackDays: number
-): Array<{ agentId: string; sessionFile: string; sessionKey: string }> {
+): PendingSession[] {
   const cutoff = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
-  const sessions: Array<{ agentId: string; sessionFile: string; sessionKey: string }> = [];
+  const sessions: PendingSession[] = [];
 
   for (const agentId of agentIds) {
     for (const sessionsDir of sessionDirsFor(agentId)) {
@@ -139,18 +156,25 @@ function listUnprocessedSessions(
 
       // Check file modification time against lookback
       const filePath = resolve(sessionsDir, file);
+      let mtimeMs: number;
       try {
-        const { mtimeMs } = statSync(filePath);
+        mtimeMs = statSync(filePath).mtimeMs;
         if (new Date(mtimeMs).toISOString() < cutoff) continue;
       } catch {
         continue;
       }
 
-      sessions.push({ agentId, sessionFile: filePath, sessionKey });
+      sessions.push({ agentId, sessionFile: filePath, sessionKey, mtimeMs });
     }
     }
   }
 
+  // Oldest first. The caller cuts this list at maxSessionsPerRun; in readdir order, agent by
+  // agent, which sessions ran under a backlog was arbitrary, and the ones closest to leaving the
+  // lookback could wait behind new ones until they aged out (measured on one deployment: a
+  // backlog of 118 sessions after a transcript address change). Oldest first, a backlog drains
+  // before any of it expires.
+  sessions.sort((a, b) => a.mtimeMs - b.mtimeMs || a.sessionKey.localeCompare(b.sessionKey));
   return sessions;
 }
 
@@ -240,12 +264,20 @@ Responda APENAS com JSON válido:
 Importância: 0.9+ = crítico, 0.7-0.9 = importante, 0.5-0.7 = útil, <0.5 = ignorar.
 Retorne [] se não houver nada relevante. Máximo 10 itens.`;
 
-async function distillWithGemini(conversationBlock: string): Promise<DistilledMemory[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return [];
+// Why a block yielded what it yielded. Before this, every failure returned [] exactly like "the
+// model found nothing", and a fallback provider was tried whenever the result was empty. One
+// deployment measured that fallback at 21 failures in 21 calls over two months, with its key
+// present, while the summary line still read like a quiet night. What reaches the database is
+// unchanged: any outcome other than "ok" contributes no memories.
+export type DistillOutcome = "ok" | "empty" | "no_key" | "http_error" | "network_error" | "no_text" | "bad_json";
 
+export async function distillWithGemini(conversationBlock: string): Promise<{ outcome: DistillOutcome; memories: DistilledMemory[] }> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return { outcome: "no_key", memories: [] };
+
+  let response: Response;
   try {
-    const response = await fetch(
+    response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
       {
         method: "POST",
@@ -259,59 +291,27 @@ async function distillWithGemini(conversationBlock: string): Promise<DistilledMe
         signal: AbortSignal.timeout(30_000),
       }
     );
-
-    if (!response.ok) return [];
-    const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return [];
-
-    const parsed = JSON.parse(text) as DistillResult;
-    return (parsed.memories ?? []).filter((m) => m.importance >= 0.5);
   } catch {
-    return [];
+    return { outcome: "network_error", memories: [] };
   }
-}
+  if (!response.ok) return { outcome: "http_error", memories: [] };
 
-async function distillWithGroq(conversationBlock: string): Promise<DistilledMemory[]> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return [];
+  let text: string | undefined;
+  try {
+    const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  } catch {
+    return { outcome: "bad_json", memories: [] };
+  }
+  if (!text) return { outcome: "no_text", memories: [] };
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [
-          { role: "system", content: DISTILL_SYSTEM },
-          { role: "user", content: "Conversa:\n" + conversationBlock }
-        ],
-        temperature: 0.1,
-        max_tokens: 1024,
-        response_format: { type: "json_object" },
-      }),
-      signal: AbortSignal.timeout(25_000),
-    });
-
-    if (!response.ok) return [];
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const text = data.choices?.[0]?.message?.content;
-    if (!text) return [];
-
     const parsed = JSON.parse(text) as DistillResult;
-    return (parsed.memories ?? []).filter((m) => m.importance >= 0.5);
+    const memories = (parsed.memories ?? []).filter((m) => m.importance >= 0.5);
+    return { outcome: memories.length > 0 ? "ok" : "empty", memories };
   } catch {
-    return [];
+    return { outcome: "bad_json", memories: [] };
   }
-}
-
-async function distillBlock(conversationBlock: string): Promise<DistilledMemory[]> {
-  // Try Gemini first (cheaper, faster)
-  const geminiResult = await distillWithGemini(conversationBlock);
-  if (geminiResult.length > 0) return geminiResult;
-
-  // Fallback to Groq
-  return await distillWithGroq(conversationBlock);
 }
 
 // ─── Main pipeline ────────────────────────────────────────────────────────────
@@ -330,6 +330,29 @@ export interface DistillStats {
   memoriesExtracted: number;
   memoriesDeduplicated: number;
   memoriesIngested: number;
+  /** blocks per DistillOutcome (dry runs call no model and count nothing) */
+  blockOutcomes: Partial<Record<DistillOutcome, number>>;
+}
+
+export function recordOutcomes(dryRun: boolean, agentIds: readonly string[], lookbackDays: number, pending: number, stats: DistillStats): void {
+  const path = outcomesPath();
+  if (dryRun || !path) return;
+  try {
+    appendFileSync(path, JSON.stringify({
+      ts: new Date().toISOString(),
+      agents: agentIds,
+      lookback_days: lookbackDays,
+      pending,
+      processed: stats.processedSessions,
+      skipped: stats.skippedSessions,
+      extracted: stats.memoriesExtracted,
+      deduped: stats.memoriesDeduplicated,
+      ingested: stats.memoriesIngested,
+      block_outcomes: stats.blockOutcomes,
+    }) + "\n");
+  } catch (e) {
+    console.warn(`[DISTILL] could not record outcomes in ${path}: ${(e as Error).message}`);
+  }
 }
 
 export async function distillSessions(options: DistillOptions = {}): Promise<DistillStats> {
@@ -350,12 +373,20 @@ export async function distillSessions(options: DistillOptions = {}): Promise<Dis
     memoriesExtracted: 0,
     memoriesDeduplicated: 0,
     memoriesIngested: 0,
+    blockOutcomes: {},
   };
 
-  const sessions = listUnprocessedSessions(db, agentIds, lookbackDays).slice(0, maxSessionsPerRun);
+  const pending = listUnprocessedSessions(db, agentIds, lookbackDays);
+  const sessions = pending.slice(0, maxSessionsPerRun);
+  if (pending.length > sessions.length) {
+    // A full list on every run is the backlog signal: say how much is left, in the log a
+    // scheduled job keeps, instead of leaving it to be found by a census.
+    console.log(`[DISTILL] Backlog: ${pending.length} unprocessed in the lookback, taking the ${sessions.length} oldest; ${pending.length - sessions.length} left for the next run`);
+  }
 
   if (sessions.length === 0) {
     console.log("[DISTILL] No unprocessed sessions found");
+    recordOutcomes(dryRun, agentIds, lookbackDays, pending.length, stats);
     return stats;
   }
 
@@ -410,7 +441,8 @@ export async function distillSessions(options: DistillOptions = {}): Promise<Dis
         continue;
       }
 
-      const memories = await distillBlock(block);
+      const { outcome, memories } = await distillWithGemini(block);
+      stats.blockOutcomes[outcome] = (stats.blockOutcomes[outcome] ?? 0) + 1;
       stats.memoriesExtracted += memories.length;
 
       for (const memory of memories) {
@@ -479,6 +511,8 @@ export async function distillSessions(options: DistillOptions = {}): Promise<Dis
     console.log(`[DISTILL] ${agentId} ${sessionKey.split(":")[1]?.substring(0, 8)} → ${sessionExtracted} memories`);
   }
 
+  console.log(`[DISTILL] Blocks by outcome: ${JSON.stringify(stats.blockOutcomes)}`);
   console.log(`[DISTILL] Done: ${stats.processedSessions} sessions, ${stats.memoriesIngested} ingested, ${stats.memoriesDeduplicated} deduped`);
+  recordOutcomes(dryRun, agentIds, lookbackDays, pending.length, stats);
   return stats;
 }
