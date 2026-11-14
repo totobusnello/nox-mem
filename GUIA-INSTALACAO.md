@@ -167,7 +167,7 @@ NOX_EMBEDDING_API_KEY=sk-...
 
 A troca é feita em runtime — não precisa recompilar. Trocar de modelo de embedding exige re-embedar o corpus inteiro; `text-embedding-3-small` (1536 dimensões) só serve para um banco novo e vazio. Detalhes e a lista completa de variáveis: `nox-mem/README.md`.
 
-`consolidate`, `kg-extract`, `digest` e a expansão de query ainda não passam pela camada de providers: eles chamam o Gemini diretamente (o `consolidate` cai para Groq e depois Claude; o `digest`, para Groq e depois Ollama local) e precisam de `GEMINI_API_KEY`, mesmo com outro provider configurado.
+`consolidate`, `kg-extract`, `digest` e a expansão de query ainda não passam pela camada de providers: eles chamam o Gemini diretamente (o `consolidate` cai para Claude; o `digest`, para Ollama local) e precisam de `GEMINI_API_KEY`, mesmo com outro provider configurado.
 
 ---
 

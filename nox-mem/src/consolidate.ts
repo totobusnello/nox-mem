@@ -82,41 +82,6 @@ async function callGemini(prompt: string, retries = 2): Promise<ConsolidationRes
   return null;
 }
 
-// Ollama removed — offline and not planned to return. Groq is first fallback.
-
-async function callGroqFallback(prompt: string, retries = 2): Promise<ConsolidationResult | null> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    console.error("[ERROR] GROQ_API_KEY not set — trying Gemini retry");
-    return await callGeminiSimple(prompt);
-  }
-  const systemMsg = 'Você é um extrator de memória. Responda APENAS com JSON válido no formato: {"decisions":[],"lessons":[],"people":[],"projects":[],"pending":[]}';
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          messages: [{ role: "system", content: systemMsg }, { role: "user", content: prompt }],
-          temperature: 0, max_tokens: 2048, response_format: { type: "json_object" }
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) { console.error(`[WARN] Groq HTTP ${response.status}`); continue; }
-      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const text = data.choices?.[0]?.message?.content;
-      if (!text) continue;
-      const parsed = JSON.parse(text) as ConsolidationResult;
-      if (parsed.decisions && parsed.lessons) { console.log("[INFO] Groq fallback OK"); return parsed; }
-    } catch (err) { console.error(`[WARN] Groq error: ${err instanceof Error ? err.message : String(err)}`); }
-  }
-  console.error("[WARN] Groq failed — falling back to Gemini retry");
-  return await callGeminiSimple(prompt);
-  // Note: Claude Haiku is called from the main consolidate() loop after callGroqFallback returns null.
-  // callGeminiSimple is kept here as a last-resort inside the Groq path only.
-}
-
 /**
  * Final fallback: Claude Haiku via Anthropic Messages API.
  * sk-ant-oat OAuth tokens work fine with the direct API endpoint.
@@ -350,14 +315,15 @@ export async function consolidate(options?: { retryFailed?: boolean; dryRun?: bo
 
     const fullText = filteredChunks.map((c) => c.chunk_text).join("\n\n");
     const prompt = promptTemplate + fullText;
-    // Fallback chain: Gemini → Groq → Claude Haiku → GeminiSimple
+    // Fallback chain: Gemini → GeminiSimple → Claude Haiku. GeminiSimple used to run inside the
+    // Groq step, with or without its key; Groq left the package and the order did not change.
     let result = await callGemini(prompt);
     if (!result) {
-      console.error("[WARN] Gemini failed — trying Groq fallback...");
-      result = await callGroqFallback(prompt);
+      console.error("[WARN] Gemini failed — trying Gemini simple retry...");
+      result = await callGeminiSimple(prompt);
     }
     if (!result) {
-      console.error("[WARN] Groq failed — trying Claude Haiku fallback...");
+      console.error("[WARN] Gemini simple failed — trying Claude Haiku fallback...");
       result = await callClaudeHaiku(prompt);
     }
 

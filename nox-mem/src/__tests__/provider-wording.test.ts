@@ -1,4 +1,4 @@
-// consolidate no longer uses Ollama (Gemini, then Groq, then Claude — see
+// consolidate no longer uses Ollama (Gemini, then Claude — see
 // src/consolidate.ts). The CLI description, the doctor's Ollama hint and the
 // templates must not say otherwise. digest DOES still fall back to Ollama, so
 // that statement must stay.
@@ -37,4 +37,33 @@ test("templates: no line ties consolidate to Ollama; digest keeps its Ollama men
   }
   const tools = readFileSync(join(TEMPLATES, "TOOLS.md"), "utf8");
   assert.ok(tools.split("\n").some((l) => l.includes("nox-mem digest") && /ollama/i.test(l)));
+});
+
+// Groq left the package on 2026-11-14: one deployment measured its fallback at 21 failures in 21
+// calls, and the operator does not use it. A comment may still name it as history; what must not
+// come back is a call to its API, a read of its key, or a user-facing line that promises it.
+test("no module calls Groq or reads its key", async () => {
+  const { readdirSync, statSync } = await import("node:fs");
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const n of readdirSync(d)) {
+      const f = join(d, n);
+      if (statSync(f).isDirectory()) { if (n !== "__tests__") walk(f); }
+      else if (f.endsWith(".ts")) files.push(f);
+    }
+  };
+  walk(SRC);
+  const hits = files.filter((f) => /api\.groq\.com|GROQ_API_KEY/.test(readFileSync(f, "utf8")));
+  assert.deepEqual(hits, []);
+});
+
+test("CLI help and templates do not offer Groq", () => {
+  const home = tmpRoot("wording-groq");
+  const r = runCli(["consolidate", "--help"], { NOX_DB_PATH: join(home, "n.db") }, home);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /groq/i);
+  for (const t of ["IDENTITY.md", "TOOLS.md", "MEMORY.md"]) {
+    const f = join(TEMPLATES, t);
+    if (existsSync(f)) assert.doesNotMatch(readFileSync(f, "utf8"), /groq/i, t);
+  }
 });

@@ -1,6 +1,6 @@
 /**
  * compact.ts — Compress old chunks (>30 days) into summaries
- * Uses Gemini 2.5 Flash (primary), Groq (secondary), first-sentence (fallback)
+ * Uses Gemini 2.5 Flash-Lite, with a first-sentence fallback
  * Reduces DB size while preserving knowledge
  */
 import { getDb } from "./db.js";
@@ -36,34 +36,6 @@ async function geminiSummary(chunks: Array<{ chunk_text: string; source_date: st
     const data = await res.json() as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
     return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
   } catch { return null; }
-}
-
-/** Secondary: Groq summary */
-async function llmSummary(chunks: Array<{ chunk_text: string; source_date: string }>, dateRange: string): Promise<string | null> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return null;
-
-  const combined = chunks.map((c) => `[${c.source_date}] ${c.chunk_text}`).join("\n\n");
-  const prompt = `Você é um compressor de memória de agentes de IA. Resuma os seguintes ${chunks.length} registros de memória (período: ${dateRange}) em 2-3 frases densas em PT-BR. Preserve: decisões, lições, nomes de pessoas/projetos, datas importantes. Descarte: detalhes operacionais repetidos, contexto expirado.\n\nRegistros:\n${combined.substring(0, 3000)}\n\nResumo (2-3 frases):`;
-
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1,
-        max_tokens: 256,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-    return data.choices?.[0]?.message?.content?.trim() || null;
-  } catch {
-    return null;
-  }
 }
 
 /** Fallback: extract first meaningful sentence from each chunk */
@@ -117,9 +89,9 @@ async function _compactImpl(ageDays: number = DEFAULT_AGE_DAYS, dryRun: boolean 
       `SELECT id, chunk_text, source_date FROM chunks WHERE id IN (${placeholders}) ORDER BY source_date ASC`
     ).all(...chunkIds) as Array<{ id: number; chunk_text: string; source_date: string }>;
 
-    // Create summary: Gemini (primary) → Groq (secondary) → first-sentence (fallback)
+    // Create summary: Gemini → first-sentence (fallback)
     const dateRange = `${group.first_date}..${group.last_date}`;
-    const llmResult = (await geminiSummary(chunks, dateRange)) ?? (await llmSummary(chunks, dateRange));
+    const llmResult = await geminiSummary(chunks, dateRange);
     const summaryBody = llmResult
       ? llmResult
       : firstSentenceFallback(chunks);

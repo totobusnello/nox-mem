@@ -270,7 +270,7 @@ program
 
 program
   .command("consolidate")
-  .description("Consolidate daily notes into topic files (LLM: Gemini, then Groq, then Claude — needs GEMINI_API_KEY, GROQ_API_KEY or ANTHROPIC_API_KEY)")
+  .description("Consolidate daily notes into topic files (LLM: Gemini, then Claude — needs GEMINI_API_KEY or ANTHROPIC_API_KEY)")
   .action(async () => {
     const { consolidate } = await import("./consolidate.js");
     const result = await consolidate();

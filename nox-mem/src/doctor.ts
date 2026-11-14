@@ -81,7 +81,7 @@ export async function doctor(opts: { quiet?: boolean } = {}): Promise<void> {
   // ── Optional integrations ──────────────────────────────────────────────────
 
   // Ollama — only the last-resort fallback of `digest` (consolidate and
-  // kg-extract use Gemini/Groq/Claude and never call it)
+  // kg-extract use Gemini/Claude and never call it)
   try {
     const response = await fetch("http://127.0.0.1:11434/api/tags", { signal: AbortSignal.timeout(5000) });
     if (response.ok) {
@@ -92,7 +92,7 @@ export async function doctor(opts: { quiet?: boolean } = {}): Promise<void> {
       optional.push({ name: "Ollama", status: "⚠️", detail: `HTTP ${response.status}` });
     }
   } catch {
-    optional.push({ name: "Ollama", status: "⚪", detail: "not running (optional — only `digest` falls back to it; consolidate uses Gemini, then Groq, then Claude)" });
+    optional.push({ name: "Ollama", status: "⚪", detail: "not running (optional — only `digest` falls back to it; consolidate uses Gemini, then Claude)" });
   }
 
   // Notion token
