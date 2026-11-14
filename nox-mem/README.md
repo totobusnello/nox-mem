@@ -126,6 +126,7 @@ nox-mem stats
 | `NOX_KNOWN_PROJECTS` | empty | Project slugs for `project-context-gen`. |
 | `NOX_AGENT_NAME` | unset | Who is searching, written to `search_telemetry.requesting_agent` as `<surface>:<agent>` (`mcp:atlas`, `cli:unknown`; searches with `track=false` become `probe:<agent>`). Over HTTP the `X-Agent-Name` header wins. Only `[a-z0-9_.-]{1,40}` is kept; anything else is recorded as `invalid`. |
 | `NOX_AGENTS` / `NOX_AGENTS_DIR` | empty / — | Multi-agent cross-search layout (no-op standalone). |
+| `NOX_DISTILL_OUTCOMES_PATH` | unset | File where `session-distill` appends one JSON line of counts per real run (sessions pending/processed, memories extracted/deduped/ingested, blocks per outcome: `ok`, `empty`, `no_key`, `http_error`, `network_error`, `no_text`, `bad_json`). Unset, it writes nothing; the same counts go to stdout. Set it when a scheduler keeps no stdout. The directory must exist. |
 | `NOX_WATCH_DIRS` | `<workspace>/memory`, `/shared` (+ OpenClaw agent folders) | Comma-sep **absolute** dirs for `nox-mem watch`. Unset on a standalone install it watches `~/.nox-mem/memory` (and `~/.nox-mem/shared` if present). Other folders: `NOX_WATCH_DIRS="$HOME/notes" nox-mem watch`. |
 | `NOX_SPEAKER_FILTER` | empty | One-time V7 migration speaker classification. |
 | `NOX_NOTION_TOKEN_PATH` | `/root/.config/notion/api_key` | Path of an optional Notion token file (only `doctor` looks at it). |
@@ -136,7 +137,7 @@ nox-mem stats
 
 By default nox-mem uses **Gemini via Google AI Studio** for both LLM synthesis and embeddings (`GEMINI_API_KEY`, model `gemini-2.5-flash-lite`, embeddings `gemini-embedding-001` at 3072 dimensions).
 
-The RAG answer/reflect layer and embeddings are provider-pluggable at runtime — no rebuild required. Note: some internal LLM operations (knowledge-graph extraction, consolidation, digest, query expansion) still call Gemini directly and require `GEMINI_API_KEY` even when another provider is set — full provider routing is on the roadmap.
+The RAG answer/reflect layer and embeddings are provider-pluggable at runtime — no rebuild required. Note: some internal LLM operations (knowledge-graph extraction, consolidation, digest, session distill, query expansion) still call Gemini directly and require `GEMINI_API_KEY` even when another provider is set — full provider routing is on the roadmap.
 
 ### LLM synthesis (reflect, answer)
 

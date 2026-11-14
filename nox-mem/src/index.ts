@@ -727,6 +727,7 @@ program
     console.log(`  Memories extracted:   ${result.memoriesExtracted}`);
     console.log(`  Memories deduped:     ${result.memoriesDeduplicated}`);
     console.log(`  Memories ingested:    ${result.memoriesIngested}`);
+    console.log(`  Blocks by outcome:    ${JSON.stringify(result.blockOutcomes)}`);
     closeDb();
   });
 
