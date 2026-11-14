@@ -59,7 +59,7 @@ printf '# Teste\nDecisão de teste: ingest funcionando em %s\n' "$(date)" > "$TE
 NOX_DB_PATH="$TEST_DIR/test.db" nox-mem ingest "$TEST_NOTE" &>/dev/null && pass "ingest: nota de teste ingerida (banco temporário)" || fail "ingest: falhou"
 rm -rf "$TEST_DIR"
 
-# 10. Ollama — opcional: só o fallback local do `digest` usa (consolidate e kg-extract usam Gemini/Groq/Claude)
+# 10. Ollama — opcional: só o fallback local do `digest` usa (consolidate e kg-extract usam Gemini/Claude)
 curl -sf http://localhost:11434/api/tags &>/dev/null && pass "Ollama acessível" || warn "Ollama não acessível (opcional: só o fallback do digest usa)"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

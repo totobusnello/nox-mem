@@ -11,10 +11,6 @@ const WORKSPACE = workspaceRoot();
 // Primary: Gemini 2.5 Flash (large context, free tier, handles 50k+ tokens)
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent";
 
-// Secondary: Groq (fast, but 12k TPM limit — fails on large digests)
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama-3.3-70b-versatile";
-
 // Fallback: Ollama local (llama3.2:3b — limited ctx 4096 tokens, may fail with large prompts)
 const OLLAMA_URL = "http://127.0.0.1:11434/api/generate";
 const OLLAMA_MODEL = "llama3.2:3b";
@@ -70,56 +66,6 @@ async function callGemini(prompt: string, retries = 2): Promise<string | null> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[WARN] Gemini error (attempt ${attempt}/${retries}): ${msg}`);
-    }
-  }
-  return null;
-}
-
-/**
- * Call Groq API (OpenAI-compatible). Returns null if unavailable.
- */
-async function callGroq(prompt: string, retries = 2): Promise<string | null> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    console.error("[WARN] GROQ_API_KEY not set — skipping Groq");
-    return null;
-  }
-
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      console.error(`[INFO] Calling Groq (attempt ${attempt}/${retries})...`);
-      const response = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: GROQ_MODEL,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 1024,
-        }),
-        signal: AbortSignal.timeout(60_000),
-      });
-
-      if (!response.ok) {
-        const body = await response.text();
-        console.error(`[WARN] Groq HTTP ${response.status} (attempt ${attempt}/${retries}): ${body.slice(0, 200)}`);
-        if (response.status === 401 || response.status === 403) return null; // auth error, no retry
-        continue;
-      }
-
-      const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
-      const text = data.choices?.[0]?.message?.content?.trim();
-      if (text && text.length > 10) {
-        console.error(`[INFO] Groq response: ${text.length} chars`);
-        return text;
-      }
-      console.error(`[WARN] Empty Groq response (attempt ${attempt}/${retries})`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[WARN] Groq error (attempt ${attempt}/${retries}): ${msg}`);
     }
   }
   return null;
@@ -191,18 +137,14 @@ export async function digest(): Promise<void> {
   const prompt = promptTemplate + fullText;
   console.log(`[INFO] Total prompt: ${prompt.length} chars (~${Math.ceil(prompt.length / 4)} tokens)`);
 
-  // Try Gemini first (primary — large context), then Groq, then Ollama
+  // Try Gemini first (primary — large context), then Ollama
   let result = await callGemini(prompt);
   if (!result) {
-    console.error("[WARN] Gemini failed, trying Groq fallback...");
-    result = await callGroq(prompt);
-  }
-  if (!result) {
-    console.error("[WARN] Groq failed, trying Ollama fallback...");
+    console.error("[WARN] Gemini failed, trying Ollama fallback...");
     result = await callOllama(prompt);
   }
   if (!result) {
-    console.error("[ERROR] Digest failed — Gemini, Groq and Ollama all unavailable");
+    console.error("[ERROR] Digest failed — Gemini and Ollama both unavailable");
     return;
   }
 
