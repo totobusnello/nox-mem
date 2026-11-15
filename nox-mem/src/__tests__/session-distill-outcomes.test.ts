@@ -1,7 +1,7 @@
 // Guards for what the distiller says about each block and each run. Before them every failed
 // block returned [] exactly like "the model found nothing", a fallback provider was tried on any
-// empty result, and the pending list was cut at maxSessionsPerRun in readdir order. Each test
-// below fails if one of those comes back.
+// empty result, the pending list was cut at maxSessionsPerRun in readdir order, and short sessions
+// spent that budget. Each test below fails if one of those comes back.
 //
 // Run: npx tsc && node --test dist/__tests__/session-distill-outcomes.test.js
 
@@ -20,7 +20,7 @@ process.env.NOX_CLAUDE_PROJECTS_DIR = resolve(root, "projects");
 delete process.env.NOX_DISTILL_OUTCOMES_PATH;
 
 const mod = await import("../session-distill.js");
-const { distillWithGemini, recordOutcomes, listUnprocessedSessions } = mod;
+const { distillWithGemini, recordOutcomes, listUnprocessedSessions, partitionPending } = mod;
 
 const realFetch = globalThis.fetch;
 function withFetch(impl: typeof fetch, fn: () => Promise<void>): Promise<void> {
@@ -145,4 +145,17 @@ test("pending sessions come oldest first, across agents", () => {
   const db = { prepare: () => ({ get: () => undefined }) } as unknown as Parameters<typeof listUnprocessedSessions>[0];
   const got = listUnprocessedSessions(db, ["nox", "atlas"], 30).map((s) => s.sessionKey);
   assert.deepEqual(got, ["nox:old", "atlas:mid", "nox:new"]);
+});
+
+test("short sessions are set aside without spending the budget, and reading stops when it is full", () => {
+  const mk = (key: string) => ({ agentId: "nox", sessionFile: `/x/${key}.jsonl`, sessionKey: `nox:${key}`, mtimeMs: 0 });
+  const sizes: Record<string, number> = { a: 1, b: 0, c: 5, d: 2, e: 9, f: 4, g: 1 };
+  const pending = Object.keys(sizes).map(mk);
+  const read: string[] = [];
+  const r = partitionPending(pending, 2, (s) => { read.push(s.sessionKey); return new Array(sizes[s.sessionKey.slice(4)]).fill("m"); });
+  assert.deepEqual(r.take.map((t) => t.session.sessionKey), ["nox:c", "nox:e"]);
+  assert.deepEqual(r.take.map((t) => t.messages.length), [5, 9]);
+  assert.deepEqual(r.short.map((s) => [s.session.sessionKey, s.count]), [["nox:a", 1], ["nox:b", 0], ["nox:d", 2]]);
+  assert.equal(r.left, 2);
+  assert.deepEqual(read, ["nox:a", "nox:b", "nox:c", "nox:d", "nox:e"]);
 });
