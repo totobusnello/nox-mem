@@ -178,6 +178,35 @@ export function listUnprocessedSessions(
   return sessions;
 }
 
+/** A session with fewer messages than this holds only init events: nothing to distill. */
+export const MIN_SESSION_MESSAGES = 3;
+
+/**
+ * Walks `pending` in order and splits it into the sessions to distill now (at most `max`, each
+ * with its messages already read) and the short ones, which are logged as done without counting
+ * against `max`. Reading stops once `max` sessions are taken; `left` is how many were not read.
+ *
+ * The budget used to be cut before the short sessions were set aside, so they spent it. Measured
+ * on one deployment (nightly run, 1-day lookback, max 50): 43 to 48 of the 50 sessions taken each
+ * night since 2026-11-10 were short, 2 to 7 were distilled, and the ~35 left over aged out of the
+ * lookback before the next run.
+ */
+export function partitionPending<M>(
+  pending: readonly PendingSession[],
+  max: number,
+  read: (s: PendingSession) => M[]
+): { take: Array<{ session: PendingSession; messages: M[] }>; short: Array<{ session: PendingSession; count: number }>; left: number } {
+  const take: Array<{ session: PendingSession; messages: M[] }> = [];
+  const short: Array<{ session: PendingSession; count: number }> = [];
+  let i = 0;
+  for (; i < pending.length && take.length < max; i++) {
+    const messages = read(pending[i]);
+    if (messages.length < MIN_SESSION_MESSAGES) short.push({ session: pending[i], count: messages.length });
+    else take.push({ session: pending[i], messages });
+  }
+  return { take, short, left: pending.length - i };
+}
+
 // ─── Message extraction ───────────────────────────────────────────────────────
 
 export function extractMessages(sessionFile: string): Array<{ role: string; text: string; timestamp: string }> {
@@ -377,37 +406,35 @@ export async function distillSessions(options: DistillOptions = {}): Promise<Dis
   };
 
   const pending = listUnprocessedSessions(db, agentIds, lookbackDays);
-  const sessions = pending.slice(0, maxSessionsPerRun);
-  if (pending.length > sessions.length) {
+  const { take: sessions, short, left } = partitionPending(pending, maxSessionsPerRun, (s) => extractMessages(s.sessionFile));
+
+  // Short sessions (just init events) are logged as done and do not count against the budget.
+  for (const { session, count } of short) {
+    stats.skippedSessions++;
+    if (!dryRun) {
+      db.prepare(
+        "INSERT OR IGNORE INTO session_distill_log (session_key, agent, chunks_extracted, message_count) VALUES (?, ?, 0, ?)"
+      ).run(session.sessionKey, session.agentId, count);
+    }
+  }
+  if (left > 0) {
     // A full list on every run is the backlog signal: say how much is left, in the log a
     // scheduled job keeps, instead of leaving it to be found by a census.
-    console.log(`[DISTILL] Backlog: ${pending.length} unprocessed in the lookback, taking the ${sessions.length} oldest; ${pending.length - sessions.length} left for the next run`);
+    console.log(`[DISTILL] Backlog: ${pending.length} unprocessed in the lookback; ${short.length} short logged, taking the ${sessions.length} oldest; ${left} left for the next run`);
   }
 
   if (sessions.length === 0) {
-    console.log("[DISTILL] No unprocessed sessions found");
+    console.log(short.length ? `[DISTILL] ${short.length} short sessions logged, none to distill` : "[DISTILL] No unprocessed sessions found");
     recordOutcomes(dryRun, agentIds, lookbackDays, pending.length, stats);
     return stats;
   }
 
-  console.log(`[DISTILL] Processing ${sessions.length} sessions (lookback: ${lookbackDays}d)`);
+  console.log(`[DISTILL] Processing ${sessions.length} sessions (lookback: ${lookbackDays}d; ${short.length} short logged)`);
 
   // Group messages into blocks of ~2000 chars for the LLM
   const BLOCK_SIZE = 2000;
 
-  for (const { agentId, sessionFile, sessionKey } of sessions) {
-    const messages = extractMessages(sessionFile);
-    if (messages.length < 3) {
-      // Skip tiny sessions (just session init events)
-      stats.skippedSessions++;
-      if (!dryRun) {
-        db.prepare(
-          "INSERT OR IGNORE INTO session_distill_log (session_key, agent, chunks_extracted, message_count) VALUES (?, ?, 0, ?)"
-        ).run(sessionKey, agentId, messages.length);
-      }
-      continue;
-    }
-
+  for (const { session: { agentId, sessionKey }, messages } of sessions) {
     stats.messagesRead += messages.length;
 
     // Build conversation text, apply noise filter
