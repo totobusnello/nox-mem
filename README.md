@@ -4,14 +4,14 @@
 
 <h1 align="center">NOX-Supermem</h1>
 
-<p align="center"><strong>Pain-weighted hybrid memory for AI agents &mdash; yours by design.</strong></p>
+<p align="center"><strong>Hybrid memory for AI agents in one SQLite file &mdash; yours by design.</strong></p>
 
-<p align="center"><em>The only agent memory that&rsquo;s genuinely yours. SQLite on your disk, provider your choice, zero vendor lock-in.</em></p>
+<p align="center"><em>SQLite on your disk, provider your choice, no vendor lock-in.</em></p>
 
 <p align="center"><sub><strong>NOX-Supermem</strong> packages the <a href="https://github.com/totobusnello/memoria-nox"><code>nox-mem</code></a> engine for standalone, self-hosted use &mdash; CLI &middot; MCP server &middot; HTTP API.</sub></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Q-Quality-00C896?style=for-the-badge&labelColor=1A1A2E" alt="Quality: numbers #1">
+  <img src="https://img.shields.io/badge/Q-Quality-00C896?style=for-the-badge&labelColor=1A1A2E" alt="Quality: measured, with the losses reported">
   <img src="https://img.shields.io/badge/A-Autonomy-00C896?style=for-the-badge&labelColor=1A1A2E" alt="Autonomy: data yours, provider yours">
   <img src="https://img.shields.io/badge/P-Product-00C896?style=for-the-badge&labelColor=1A1A2E" alt="Product: UX that ships">
 </p>
@@ -25,12 +25,12 @@
 </p>
 
 <p align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-longmemeval-dark.svg"><img src="assets/readme/stat-longmemeval-light.svg" alt="LongMemEval nDCG@10 1.0 retrieval ceiling (oracle)" height="64"></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-latency-dark.svg"><img src="assets/readme/stat-latency-light.svg" alt="p50 latency" height="64"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-latency-dark.svg"><img src="assets/readme/stat-latency-light.svg" alt="529 ms p50 hybrid search latency in production" height="64"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-footprint-dark.svg"><img src="assets/readme/stat-footprint-light.svg" alt="399 MB resident, one process" height="64"></picture>
   <br>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-scale-dark.svg"><img src="assets/readme/stat-scale-light.svg" alt="100k+ chunks, one SQLite file" height="64"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-scale-dark.svg"><img src="assets/readme/stat-scale-light.svg" alt="69k chunks in one SQLite file, measured in production" height="64"></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-opex-dark.svg"><img src="assets/readme/stat-opex-light.svg" alt="under $11/mo all-in" height="64"></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-tests-dark.svg"><img src="assets/readme/stat-tests-light.svg" alt="586 tests passing, 0 failing" height="64"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/stat-tests-dark.svg"><img src="assets/readme/stat-tests-light.svg" alt="663 tests: 659 passing, 4 skipped, 0 failing" height="64"></picture>
 </p>
 
 <p align="center">
@@ -38,7 +38,8 @@
   <a href="#-install">🚀 Install</a> &middot;
   <a href="#-step-by-step--for-humans">👤 Humans</a> &middot;
   <a href="#-step-by-step--for-agents-openclaw--hermes--others">🤖 Agents</a> &middot;
-  <a href="#-the-numbers">📊 Numbers</a>
+  <a href="#-the-numbers">📊 Numbers</a> &middot;
+  <a href="#-publications">📚 Publications</a>
 </p>
 
 Long-term memory engine that any agent (OpenClaw, Hermes, Claude Code, custom) can use to *remember decisions, search past context, and never ask "where were we?" again.* The engine lives in [`nox-mem/`](./nox-mem) and ships with **no data** — your memory starts empty.
@@ -229,43 +230,62 @@ If `NOX_API_TOKEN` is set, send `Authorization: Bearer <token>`.
 
 ## 📊 The numbers
 
-The engine is the same core benchmarked in [`memoria-nox`](https://github.com/totobusnello/memoria-nox). All results 5-batch + 95% CI verified.
+Every number below is from the nox-mem technical report ([doi:10.5281/zenodo.23147633](https://doi.org/10.5281/zenodo.23147633)) and was measured with the research harness in [`memoria-nox`](https://github.com/totobusnello/memoria-nox), not with this package on its own (see [REPRODUCE.md](REPRODUCE.md)). Results that go against nox-mem are reported next to the ones that favour it.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/comparison-chart-dark.svg">
-    <img alt="nox-mem vs MemOS / Mem0 / Zep across memory benchmarks" src="assets/readme/comparison-chart-light.svg" width="820">
-  </picture>
-</p>
+### Retrieval against five memory systems
 
-### Research results (memoria-nox harness, not this package)
+A comparison planned and committed before the first run: the same corpus (6,830 LoCoMo and LongMemEval passages), the same 2,482 questions, each system at its documented default, scored by nDCG@10 at k = 10.
 
-These come from the research harness in `memoria-nox`, each with the reader backbone noted below; the package does not reproduce them on its own (see REPRODUCE.md).
+| System | Overall nDCG@10 | LoCoMo | LongMemEval | p50 latency |
+|---|---:|---:|---:|---:|
+| EverOS 1.3.1 (with a mandatory 4B re-ranker) | **0.6455** | **0.6585** | **0.5942** | 1,592 ms |
+| **nox-mem** (no re-ranker) | 0.5013 | 0.4952 | 0.5255 | 515.6 ms |
+| Zep 0.27.2 | 0.4546 | 0.4793 | 0.3567 | 6,002 ms |
+| Mem0 (on nox-mem's embedder) | 0.4331 | 0.4407 | 0.4030 | 349.8 ms |
 
-| Benchmark | nox-mem | Best competitor | Δ |
-|---|---:|---|---:|
-| **EverMemBench Overall** (Gemini-3-flash) | **63.28%** | MemOS 42.55% | **+20.73pp** |
-| **EverMemBench MA composite** | **88.42%** | MemOS 55.68% | **+32.74pp** |
-| **LoCoMo retrieval@10 strict** | **74.52%** | Mem0 SOTA F1 66.88% | above |
-| **MuSiQue F1** (n=2,417, single-shot) | **58.62%** | IRCoT 35.80% / EX(SA) 49.70% | **+22.82pp / +8.92pp** |
-| **HotPotQA ans_F1** (n=7,405 distractor) | **73.37%** | DPR+FiD reader 65–72% | **above band** |
+- **EverOS leads** on both datasets. Its pipeline cannot run without a cross-encoder re-ranker and nox-mem has none; the gap is not attributed to the re-ranker, because that was not measured.
+- **The embedder decides the order between nox-mem and Mem0.** With each system on its own default embedder (100 questions per dataset), Mem0 wins LoCoMo (0.4686 vs 0.4263) and nox-mem wins LongMemEval (0.5234 vs 0.4764). With both on `gemini-embedding-001` at 3072 dimensions, nox-mem leads on both datasets with disjoint confidence intervals.
+- Letta (about 16 minutes per query) and agentmemory did not produce full-set numbers; the report gives the reasons.
+- Latencies are from this harness and are not normalized for transport, so they are not a cross-system latency comparison.
+
+### Agent-memory benchmark (EverMemBench)
+
+LLM-judged answers, five batches (3,121 queries), top-k = 20, no re-ranker, against the MemOS row of the benchmark paper on the **same** reader model.
+
+| Reader model | nox-mem Overall | MemOS | Δ |
+|---|---:|---:|---:|
+| Gemini-3-flash | 63.28% | 59.27% | +4.01 pp |
+| GPT-4.1-mini | 51.68% | 42.55% | +9.13 pp |
+
+- **Multi-hop is a loss:** 6.02% against 10.84% for MemOS on Gemini-3-flash, and 3.21% against 18.88% on GPT-4.1-mini.
+- On Gemini-3-flash the full-context baseline reaches 72.61%, above both memory systems, so this is not a state-of-the-art result.
+- The benchmark was published by the vendor of EverOS.
+
+### What the ranking signals do
+
+On a 100-query golden set, almost all of the ranking gain comes from section-aware ranking of entity files: with only the section boost on, nDCG@10 is 0.6228, 99.86% of the full stack. The severity ("pain") term has no measured effect: Δ = +0.0065 nDCG@10, 95% CI [−0.0143, +0.0338], n = 31. It stays in the salience score as one weight among four.
 
 ### Production characteristics
 
-| Dimension | nox-mem | Comparison |
-|---|---:|---|
-| **KG path latency** (`GET /api/kg/path`, measured in production 2026-05-29) | **2.5ms p50**, no LLM or embedding call | — |
-| **Self-hosted footprint** | **399MB single-process** | Zep/Mem0/MemOS run 4+ services |
-| **Backbone portability** (research harness) | **−10.54pp on backbone swap** | MemOS −16.72pp → **1.6× more portable** |
-| **Monthly OPEX** (embed + KG + VPS) | **< $11/mo** all-in | — |
+Measured on the production host on 2026-05-29 (4 vCPU, 16 GB, six agents, 69,135 chunks).
+
+| Dimension | nox-mem |
+|---|---:|
+| Hybrid search (BM25 + dense + RRF) | 529 ms p50, 744 ms p99 |
+| Knowledge-graph path (`GET /api/kg/path`, no model call) | 2.5 ms p50 |
+| Resident memory | 399 MB idle, 423 MB at ten concurrent requests |
+| Services and mandatory third-party keys | 1 process, 0 keys (embeddings optional) |
+| Cost per hybrid query | one embedding call, about $1.50 per million queries |
 
 <sub>
-<b>How to read these.</b> All results are 5-batch with 95% CI on the backbone noted; EverMemBench / MA / backbone-portability are on Gemini-3-flash.<br>
-&bull; <b>LoCoMo</b> is <i>retrieval@10 strict</i> (a retrieval metric) shown next to Mem0's reported F1 — different metrics, for scale, not a like-for-like claim.<br>
-&bull; <b>LongMemEval 1.0</b> is the <i>oracle retrieval ceiling</i> (gold answers in-corpus &rArr; nDCG@10 = 1.0), not an end-to-end inference score; standalone accuracy is ~68%.<br>
-&bull; <b>&lt; $11/mo</b> assumes the cheapest Hostinger VPS + Google AI Studio free tier.<br>
-Step-by-step on what's reproducible from this package vs the research harness: <a href="REPRODUCE.md"><b>REPRODUCE.md</b></a>. Methodology, paper, and full competitive analysis: <a href="https://github.com/totobusnello/memoria-nox"><code>memoria-nox</code></a>. MemOS arXiv:2602.01313 &middot; MuSiQue (Trivedi 2022) &middot; HotPotQA (Yang 2018).
+For comparison, from each project's own documentation and not measured by us: Mem0 runs Postgres and Qdrant and needs an OpenAI key; Zep runs Zep and Postgres and does not start without a paid LLM key; EverOS's docker-compose runs MongoDB, Elasticsearch, Milvus, Redis and Postgres. <b>&lt; $11/mo</b> in the header assumes the cheapest Hostinger VPS and the Google AI Studio free tier.
 </sub>
+
+---
+
+## 📚 Publications
+
+The technical report describes the system and the comparison above: *nox-mem* technical report, Zenodo, [doi:10.5281/zenodo.23147633](https://doi.org/10.5281/zenodo.23147633). The studies that followed it (evaluation on a Portuguese agent memory, construction of memory by LLMs, knowledge-graph repair, whether agents consult their memory) are listed with their DOIs in the [`memoria-nox` README](https://github.com/totobusnello/memoria-nox#other-publications-from-this-repository) and at [labf.bio/research](https://labf.bio/research/). None is peer reviewed.
 
 ---
 

@@ -251,6 +251,9 @@ nox-mem vectorize          — embed any unembedded chunks
 nox-mem stats              — chunk/entity/vector counts
 nox-mem kg-build           — extract knowledge graph entities
 nox-mem reflect "question" — synthesis over memory + KG, with cited sources
+nox-mem session-distill    — distill memories from agent session JSONL files (Gemini; oldest first; --dry-run,
+                             --agents, --lookback-days, --max-sessions); stored as `distilled`, which never decays.
+                             Multi-agent layouts only (NOX_AGENTS_DIR); on a standalone install there is nothing to read
 nox-mem-api                — start HTTP API on $NOX_API_PORT (default 18802)
 nox-mem-mcp                — start MCP server over stdio (22 tools, incl. nox_mem_answer and nox_mem_get, for agents)
 nox-mem doctor             — health check (core + optional integrations)

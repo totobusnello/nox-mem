@@ -1,5 +1,5 @@
-<svg width="220" height="80" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="586 tests passing, 0 failing">
-  <title>586 tests passing, 0 failing</title>
+<svg width="220" height="80" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="663 tests: 659 passing, 4 skipped, 0 failing">
+  <title>663 tests: 659 passing, 4 skipped, 0 failing</title>
   <defs>
     <linearGradient id="bg-tests-l" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#FFFFFF"/>
