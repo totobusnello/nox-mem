@@ -125,7 +125,7 @@ interface LLMExtraction {
 // ─── Fast-path regex (PT-BR) ────────────────────────────────────────────────
 //
 // Detecta entidades óbvias sem LLM. Se ≥3 encontradas, pula Gemini.
-// Patterns calibrados para o contexto do Totó (M&A, FII, contratos PT-BR).
+// Patterns calibrados para documentos de negócio em PT-BR.
 
 const RE_VALUE_BRL = /R\$\s?\d[\d\.,]*(?:\s?(?:mil|milh[ãa]o|milh[õo]es|bi|bilh[ãa]o|k|m|b))?/gi;
 const RE_VALUE_USD = /US?\$\s?\d[\d\.,]*(?:\s?(?:k|m|b|million|thousand|billion))?/gi;
