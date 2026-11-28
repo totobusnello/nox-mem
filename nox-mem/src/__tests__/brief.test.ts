@@ -306,7 +306,7 @@ test("handle: serve brief, loga em brief_log e NÃO toca access_count", () => {
 test("v1.2a near-dup: variantes HEARTBEAT colapsam; itens distintos não", () => {
   const a = tokenSignature("nota", "Ler HEARTBEAT.md do workspace e seguir estritamente");
   const b = tokenSignature("nota", "Seguir HEARTBEAT.md estritamente, sem inferir tarefas");
-  const c = tokenSignature("nota", "Contrato Malvas x Treviso x GLPG pendente");
+  const c = tokenSignature("nota", "Contrato Alfa x Beta x Gama pendente");
   assert.ok(isNearDup(a, b), "variantes HEARTBEAT deveriam colapsar");
   assert.ok(!isNearDup(a, c), "itens distintos não podem colapsar");
 });
@@ -317,14 +317,14 @@ test("v1.2a brief: só 1 variante HEARTBEAT sobrevive; slots vão pra itens novo
     { source_file: "x/n1.md", chunk_text: "Ler HEARTBEAT.md do workspace e seguir estritamente", importance: 0.9 },
     { source_file: "x/n2.md", chunk_text: "Seguir HEARTBEAT.md estritamente, sem inferir ou repetir tarefas", importance: 0.85 },
     { source_file: "x/n3.md", chunk_text: "Usar agents/nox/HEARTBEAT.md exatamente como está, seguir estritamente", importance: 0.8 },
-    { source_file: "x/n4.md", chunk_text: "Contrato Malvas x Treviso x GLPG pendente", importance: 0.3 },
-    { source_file: "x/n5.md", chunk_text: "Invoice Aspen dezembro janeiro — Sylinc", importance: 0.25 },
+    { source_file: "x/n4.md", chunk_text: "Contrato Alfa x Beta x Gama pendente", importance: 0.3 },
+    { source_file: "x/n5.md", chunk_text: "Invoice Delta dezembro janeiro — Epsilon", importance: 0.25 },
   ]);
   const r = buildBrief(db, { scope: "x", n: 3, format: "json" }, NOW);
   const liners = r.items.map((i) => i.one_liner);
   assert.equal(liners.filter((l) => l.includes("HEARTBEAT")).length, 1, "só 1 HEARTBEAT");
-  assert.ok(liners.some((l) => l.includes("Malvas")));
-  assert.ok(liners.some((l) => l.includes("Aspen")));
+  assert.ok(liners.some((l) => l.includes("Alfa")));
+  assert.ok(liners.some((l) => l.includes("Delta")));
 });
 
 test("v1.2b união: agent traz sessions E itens globais high-salience", () => {
